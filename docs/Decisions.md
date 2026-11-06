@@ -222,17 +222,32 @@ Every non-trivial architectural or design choice is recorded here so future cont
 
 ---
 
-### D-015: Native AMQP DLX + TTL Architecture for Retries and Poison Messages
-- Phase: 3
+### D-016: MaxPages Guard Placement in CrawlTaskProcessor
+- Phase: 4
 - Status: Accepted
-- Context: We need a reliable mechanism to manage dead-letter routing and delayed retries with zero external scheduler processes.
+- Context: We need to enforce `MaxPages` to prevent infinite crawls or unbounded database growth when crawling large websites.
 - Options considered:
-  1. **RabbitMQ Delayed Message Exchange plugin (`rabbitmq_delayed_message_exchange`)** — allows per-message delay headers, but requires non-standard plugin installation in RabbitMQ container.
-  2. **External background scheduler (e.g. Quartz / Hangfire)** — polls a retry database table; adds significant moving parts.
-  3. **Standard AMQP DLX + TTL queues** — `crawl.tasks` has `x-dead-letter-exchange=crawl.dlx`. `crawl.retry` has `x-message-ttl` and `x-dead-letter-exchange=crawl.exchange` (`routingKey=crawl`).
-- Decision & why: Option 3. Works out-of-the-box with standard RabbitMQ 3 image, requires zero external plugins or schedulers, and guarantees reliable AMQP-level delivery.
-- Trade-off / cost accepted: Fixed TTL per queue rather than variable per-message backoff.
-- Revisit when: Exponential backoff with different delays per attempt requires multiple TTL retry queues or the delayed-exchange plugin.
+  1. **Publisher-side guard only in API**: Only stops the root task, but does not constrain worker recursive fan-out.
+  2. **Worker-side guard in `CrawlTaskProcessor` during child upsert & fan-out**: Before creating child page records and publishing child tasks, check `job.PagesCrawled + job.PendingTasks + newlyInserted.Count >= job.MaxPages`.
+  3. **Database constraint or trigger**: Reject page inserts exceeding `MaxPages` at SQL schema level.
+- Decision & why: Option 2. Evaluating `MaxPages` before creating child page rows and child task publishing halts expansion cleanly without database exceptions or aborted transactions.
+- Trade-off / cost accepted: Snapshot of `job.PagesCrawled` + `job.PendingTasks` under high concurrent worker count may slightly overshoot `MaxPages` by a few tasks due to race conditions.
+- Revisit when: Strict hard-cap enforcement requires serializing page insertions via row-level locks on the `crawl_jobs` row (`SELECT ... FOR UPDATE`).
+
+---
+
+### D-017: Worker Health Endpoint via ASP.NET Core Minimal API on Dedicated Port 5001
+- Phase: 4
+- Status: Accepted
+- Context: The worker process is primarily a background messaging consumer, but container orchestration (Docker Compose / Kubernetes) requires an HTTP liveness and readiness probe.
+- Options considered:
+  1. **File-based health check (`touch /tmp/healthy`)**: Docker-friendly but doesn't expose component health (DB / RabbitMQ status).
+  2. **Socket or TCP ping**: Only proves process is alive, not functional.
+  3. **Embedded Kestrel HTTP server exposing `/health` on port 5001**: Leverages `Microsoft.Extensions.Diagnostics.HealthChecks` with PostgreSQL check.
+- Decision & why: Option 3. ASP.NET Core Web SDK (`Microsoft.NET.Sdk.Web`) running Kestrel on port 5001 provides a standard, probeable HTTP health endpoint without interfering with the API service on port 5000.
+- Trade-off / cost accepted: Worker process runs a lightweight web server, consuming marginally more memory than a pure headless Worker SDK process.
+- Revisit when: Extreme memory optimization in low-resource environments requires a purely headless worker.
+
 
 
 

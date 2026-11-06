@@ -149,27 +149,29 @@ flowchart TD
 
 ---
 
-## Idempotency Walkthrough `[PLANNED]`
+## Idempotency Walkthrough
 
 > **Goal:** a message delivered twice must have exactly the same visible effect as a message delivered once.
 
-**Step-by-step (all in one DB transaction):**
+**Step-by-step (implemented in `CrawlTaskProcessor`):**
 
-1. **Guard insert:** `INSERT INTO processed_messages (message_id, processed_at) VALUES (@id, now()) ON CONFLICT DO NOTHING`; check rows-affected.
-   - If `0` rows affected → message already processed → `ACK` and return immediately.
-2. **Transition to Running** (only if current status is `Pending`): `UPDATE crawl_jobs SET status='Running', started_at=now() WHERE id=@jobId AND status='Pending'`
-3. **Page upsert:** `INSERT INTO crawled_pages (...) ON CONFLICT (job_id, normalized_url) DO NOTHING` → capture rows-affected as `isNewPage`.
-4. **Edge upserts:** `INSERT INTO page_edges (...) ON CONFLICT (job_id, parent_page_id, child_url) DO NOTHING`
-5. **Counter update:** decrement `pending_tasks` by 1 (this task finishing), increment by number of new child tasks to publish.
-6. **Commit transaction.**
-7. **Only if `isNewPage = true`:** publish child `CrawlPageTask` messages (prevents double-fan-out).
-8. **ACK** the original message.
+1. **Guard insert (inside main write transaction):** `INSERT INTO processed_messages (message_id, processed_at) VALUES (@id, now()) ON CONFLICT DO NOTHING`; check rows-affected.
+   - If `0` rows affected → message already processed → `ROLLBACK`, `ACK` and return `Success` immediately without any side effects.
+2. **Transition to Running** (prior atomic transaction): `UPDATE crawl_jobs SET status='Running', started_at=now() WHERE id=@jobId AND status='Pending'`.
+3. **Page upsert:** `INSERT INTO crawled_pages (...) ON CONFLICT (job_id, normalized_url) DO NOTHING RETURNING id` → capture `insertedId` and determine `isNewPage`.
+4. **Edge upserts:** `INSERT INTO page_edges (...) ON CONFLICT (job_id, parent_page_id, child_url) DO NOTHING` for parent-to-page and page-to-children.
+5. **Child pages:** `INSERT INTO crawled_pages (...) ON CONFLICT (job_id, normalized_url) DO NOTHING RETURNING id` for eligible child URLs within `MaxPages` cap; capture newly inserted URLs for fan-out.
+6. **Counter update:** atomically adjust `pending_tasks` by `newlyInserted.Count - 1` and increment `pages_crawled` by `1` (if `isNewPage`) via `UPDATE ... RETURNING pending_tasks`.
+7. **Completion check:** if `pending_tasks <= 0`, set `status='Completed'` (or `'Failed'` if root page failed permanently) and `completed_at=now()`.
+8. **Commit transaction.**
+9. **Child fan-out:** publish `CrawlPageTask` messages for newly inserted child URLs only.
+10. **ACK** original message.
 
-**Why this order matters:** the `ProcessedMessages` guard at step 1 is the only thing that prevents step 5 (counter decrement) from running twice on duplicate delivery. Without it, a redelivered message would decrement `pending_tasks` a second time and potentially trigger a premature job completion.
+**Why this order matters:** the `ProcessedMessages` guard at step 1 is the only thing that prevents step 6 (counter decrement) from running twice on duplicate delivery. Without it, a redelivered message would decrement `pending_tasks` a second time and trigger a premature job completion.
 
 ---
 
-## Completion Detection Walkthrough `[PLANNED]`
+## Completion Detection Walkthrough
 
 > **Invariant:** `pending_tasks` equals the number of `CrawlPageTask` messages in-flight or not yet consumed at any given moment.
 
@@ -183,13 +185,18 @@ flowchart TD
 **Detection:**
 ```sql
 UPDATE crawl_jobs
-SET pending_tasks = pending_tasks - 1
+SET pending_tasks = pending_tasks + @delta,
+    pages_crawled = pages_crawled + @pagesDelta
 WHERE id = @jobId
 RETURNING pending_tasks;
 ```
-If `RETURNING pending_tasks = 0` → mark job as `Completed` (or `Failed` if the root page failed) and set `completed_at = now()` in the same statement.
+If `RETURNING pending_tasks <= 0` → mark job as `Completed` (or `Failed` with reason if the root page failed permanently) and set `completed_at = now()`.
 
-**Limitation (D-009):** The DB commit and the broker publish are **not** atomic. If the worker crashes after committing the DB (counter incremented for N children) but before publishing those N child messages, `pending_tasks` will never reach 0 and the job will stall. This is a known limitation; the **transactional outbox** pattern is the correct fix.
+**Dual-Write Window & Crash Semantics (D-009):**
+The DB commit (step 8) and the broker publish (step 9) are separate operations.
+- If worker crashes before commit: DB transaction rolls back; message is not acked; RabbitMQ redelivers task. Nothing was committed so redelivery safely re-processes.
+- If worker crashes after commit but before broker publish: `pending_tasks` was incremented by N, but child messages were never published to RabbitMQ. The job will stall with `pending_tasks > 0`. This is the documented dual-write limitation (D-009). The **Transactional Outbox** pattern is the planned production enhancement.
+- If worker crashes after broker publish but before consumer ACK: RabbitMQ redelivers the message; consumer re-executes; `ProcessedMessages` guard in step 1 detects duplicate message ID, rolls back, and ACKs without side effects.
 
 ---
 

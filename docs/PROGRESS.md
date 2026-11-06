@@ -103,30 +103,28 @@
 ---
 
 ### Phase 4 — Worker: PageFetcher + LinkExtractor + CrawlTaskProcessor + Idempotency + Completion Counter
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| `IPageFetcher` interface + `PageFetcher` impl (HtmlAgilityPack, Polly, 2 MB cap) | ⬜ |
-| `ILinkExtractor` interface + `LinkExtractor` impl | ⬜ |
-| `CrawlTaskProcessor` — orchestrates one task end-to-end | ⬜ |
-| Idempotency: `ProcessedMessages` guard in transaction | ⬜ |
-| Page upsert `ON CONFLICT DO NOTHING`, capture rows-affected | ⬜ |
-| Edge upsert `ON CONFLICT DO NOTHING` | ⬜ |
-| Fan-out: publish child tasks only for newly inserted pages | ⬜ |
-| `pending_tasks` counter: atomic `UPDATE ... RETURNING` | ⬜ |
-| Completion detection: if `RETURNING = 0`, mark job Completed/Failed | ⬜ |
-| Permanent page failure: record page as Failed, ACK, decrement counter | ⬜ |
-| Root page permanent failure: set job status to Failed | ⬜ |
-| Canceled job: ACK and skip | ⬜ |
-| Worker `/health` endpoint (Kestrel on separate port) | ⬜ |
-| Serilog enrichment: `jobId`, `messageId`, `correlationId`, `url`, `depth`, `attempt` | ⬜ |
+| `IPageFetcher` interface + `PageFetcher` impl (HtmlAgilityPack, Polly, 2 MB cap) | ✅ |
+| `ILinkExtractor` interface + `LinkExtractor` impl | ✅ |
+| `CrawlTaskProcessor` — orchestrates one task end-to-end | ✅ |
+| Idempotency: `ProcessedMessages` guard in transaction | ✅ |
+| Page upsert `ON CONFLICT DO NOTHING`, capture rows-affected | ✅ |
+| Edge upsert `ON CONFLICT DO NOTHING` | ✅ |
+| Fan-out: publish child tasks only for newly inserted pages | ✅ |
+| `pending_tasks` counter: atomic `UPDATE ... RETURNING` | ✅ |
+| Completion detection: if `RETURNING = 0`, mark job Completed/Failed | ✅ |
+| Permanent page failure: record page as Failed, ACK, decrement counter | ✅ |
+| Root page permanent failure: set job status to Failed | ✅ |
+| Canceled job: ACK and skip | ✅ |
+| Worker `/health` endpoint (Kestrel on separate port 5001) | ✅ |
+| Serilog enrichment: `jobId`, `messageId`, `correlationId`, `url`, `depth`, `attempt` | ✅ |
 
-**Open issues:**
-- Confirm `maxPages` guard placement (before publishing children, in `CrawlTaskProcessor`).
-- Decide Kestrel health port (e.g. 5001 or 8080).
+**Open issues:** — (Resolved: MaxPages guard placed in `CrawlTaskProcessor` [D-016]; Kestrel health endpoint configured on port 5001 [D-017]).
 
-**Next step:** Await "continue" from user, then implement worker layer.
+**Next step:** Await "continue" from user, then begin Phase 5 (API Endpoints + DTOs + Tree Builder + Health + Serilog + CORS + Dockerfiles).
 
 ---
 
