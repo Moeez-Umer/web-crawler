@@ -179,4 +179,31 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: `Crawler.Api` directly references `Microsoft.EntityFrameworkCore.Design`.
 - Revisit when: Architecture changes to separate migrations into a dedicated runner image or CLI container.
 
+---
+
+### D-012: Trailing-Slash Policy for UrlNormalizer — Preserve As-Is
+- Phase: 2
+- Status: Accepted
+- Context: Many web servers distinguish `/page` and `/page/` as different resources. We need a single consistent policy so the same URL is always represented the same way, preventing both missed pages and false duplicate detection.
+- Options considered:
+  1. **Always add trailing slash** — `/page` → `/page/`. Loses distinction on servers that redirect `/page/` → `/page`.
+  2. **Always remove trailing slash** — `/page/` → `/page`. Loses distinction on servers that redirect `/page` → `/page/`; would strip the root URL `/` to empty string (requires special-casing).
+  3. **Preserve as-is** — no slash is added or removed. The URL is normalized in all other ways (scheme, host, default ports, fragment) but the trailing slash state from the original href is kept.
+- Decision & why: Preserve as-is (option 3). It is the safest choice: it never changes server-intended URL structure, requires no special-casing for the root path, and duplicates are caught by the `ON CONFLICT (job_id, normalized_url)` DB constraint rather than by over-aggressively normalizing. Documented in `UrlNormalizer.cs`.
+- Trade-off / cost accepted: A site that publishes both `/page` and `/page/` as separate links may cause two DB rows for what is functionally the same content. Acceptable within our `maxPages` budget.
+- Revisit when: We observe widespread false duplicates caused by trailing-slash inconsistency in a real crawl, at which point we can reconsider option 2 with root-path special-casing.
+
+---
+
+### D-013: Duplicate Links Count Multiple Times in DomainLinkRatioCalculator
+- Phase: 2
+- Status: Accepted
+- Context: A page may contain multiple `<a href="...">` tags pointing to the same URL. We must decide whether to count each occurrence or de-duplicate before computing the ratio.
+- Options considered:
+  1. **De-duplicate links before counting** — ratio reflects unique destinations; a page linking to the same internal URL five times has the same ratio as one that links once.
+  2. **Count each occurrence** — ratio reflects the raw HTML structure; more repetitions of an internal link increase the internal score.
+- Decision & why: Count each occurrence (option 2). The input to `Calculate` is the list of raw extracted href occurrences. De-duplicating is the caller's concern (the `LinkExtractor` could do it if desired). Counting occurrences gives a more accurate picture of the page's "orientation" — a page with 10 internal links and 1 external link should score differently than one with 1 internal and 1 external. Documented in `DomainLinkRatioCalculator.cs`.
+- Trade-off / cost accepted: A page that happens to have many repeated internal anchor tags will score higher than its unique-destination ratio. Acceptable; the ratio is a heuristic, not an exact metric.
+- Revisit when: Integration tests reveal that repeated anchor tags cause misleading ratios in practice.
+
 

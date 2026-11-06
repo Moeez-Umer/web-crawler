@@ -61,30 +61,20 @@
 ---
 
 ### Phase 2 — Domain Logic + Unit Tests
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| `UrlNormalizer` implemented (pure static, no external deps) | ⬜ |
-| `UrlNormalizer` trailing-slash policy chosen and documented | ⬜ |
-| `DomainLinkRatioCalculator` implemented | ⬜ |
-| Unit tests: `UrlNormalizerTests` — all edge cases from SPEC | ⬜ |
-| Unit tests: `DomainLinkRatioTests` — zero links, all-internal, all-external, mixed | ⬜ |
-| `dotnet test` passes with zero failures | ⬜ |
-
-**Edge cases to cover in `UrlNormalizerTests`:**
-- Relative paths, `../`, `./`
-- Fragment stripping (`#section`)
-- Default port removal (`:80`, `:443`)
-- Mixed-case host/scheme normalisation
-- `mailto:`, `tel:`, `javascript:`, `data:`, `ftp:` → reject (return null)
-- Protocol-relative `//host/path`
-- Query strings preserved
-- Empty `href`
+| `UrlNormalizer` implemented (pure static, no external deps) | ✅ |
+| `UrlNormalizer` trailing-slash policy chosen and documented | ✅ (preserve as-is — D-012) |
+| `DomainLinkRatioCalculator` implemented | ✅ |
+| Unit tests: `UrlNormalizerTests` — all edge cases from SPEC | ✅ (38 tests) |
+| Unit tests: `DomainLinkRatioCalculatorTests` — zero links, all-internal, all-external, mixed | ✅ (10 tests) |
+| `dotnet test` passes with zero failures | ✅ (48 passed, 0 failed) |
 
 **Open issues:** —
 
-**Next step:** Await "continue" from user, then implement domain layer.
+**Next step:** Await "continue" from user, then begin Phase 3 (RabbitMQ Topology + Publisher + Consumer + Retry + DLQ).
 
 ---
 
