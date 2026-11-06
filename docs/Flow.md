@@ -192,7 +192,7 @@ If `RETURNING pending_tasks = 0` → mark job as `Completed` (or `Failed` if the
 
 ---
 
-## Data Model `[PLANNED]`
+## Data Model
 
 ```mermaid
 erDiagram
@@ -249,6 +249,7 @@ erDiagram
 | `crawl_jobs` | `INDEX (created_at DESC)` | History pagination (newest first) |
 | `crawled_pages` | `INDEX (job_id)` | Efficient tree queries |
 | `page_edges` | `INDEX (job_id, parent_page_id)` | Efficient tree assembly |
+| `page_edges` | `INDEX (parent_page_id)` | FK index for cascade / joins |
 
 ---
 

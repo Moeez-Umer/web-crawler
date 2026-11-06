@@ -37,27 +37,26 @@
 ---
 
 ### Phase 1 — Solution Scaffold + Docker Compose + Entities + EF Migration
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| `web-crawler.sln` created with all projects | ⬜ |
-| `Crawler.Domain` — entities, enums (zero external deps) | ⬜ |
-| `Crawler.Contracts` — `CrawlPageTask` message schema | ⬜ |
-| `Crawler.Infrastructure` — `CrawlDbContext`, EF entity configs | ⬜ |
-| `Crawler.Api` — project shell, `Program.cs` wired up | ⬜ |
-| `Crawler.Worker` — project shell, `Program.cs` wired up | ⬜ |
-| `tests/Crawler.Domain.Tests` — project shell | ⬜ |
-| `tests/Crawler.Worker.Tests` — project shell | ⬜ |
-| `docker-compose.yml` — postgres + rabbitmq with healthchecks | ⬜ |
-| Initial EF Core migration generated and applied | ⬜ |
-| All DB constraints and indexes in migration | ⬜ |
-| `dotnet build` passes with zero warnings | ⬜ |
+| `web-crawler.sln` created with all projects | ✅ |
+| `Crawler.Domain` — entities, enums (zero external deps) | ✅ |
+| `Crawler.Contracts` — `CrawlPageTask` message schema | ✅ |
+| `Crawler.Infrastructure` — `CrawlDbContext`, EF entity configs | ✅ |
+| `Crawler.Api` — project shell, `Program.cs` wired up | ✅ |
+| `Crawler.Worker` — project shell, `Program.cs` wired up | ✅ |
+| `tests/Crawler.Domain.Tests` — project shell | ✅ |
+| `tests/Crawler.Worker.Tests` — project shell | ✅ |
+| `docker-compose.yml` — postgres + rabbitmq with healthchecks | ✅ |
+| Initial EF Core migration generated and applied | ✅ |
+| All DB constraints and indexes in migration | ✅ |
+| `dotnet build` passes with zero warnings | ✅ |
 
-**Open issues:**
-- Choose target framework moniker (`net8.0`) and confirm toolchain version.
+**Open issues:** —
 
-**Next step:** Await "continue" from user, then scaffold solution.
+**Next step:** Await "continue" from user, then begin Phase 2 (Domain Logic + Unit Tests).
 
 ---
 

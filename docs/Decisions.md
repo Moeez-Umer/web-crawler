@@ -166,3 +166,17 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: Running migrations inside the application process means a migration failure will crash the API on startup. Not suitable for blue/green or canary deploys with multiple replicas.
 - Revisit when: We move to a multi-replica production deployment or adopt a proper CD pipeline with a dedicated migration step.
 
+---
+
+### D-011: EF Core Tooling Setup and Startup Project Configuration
+- Phase: 1
+- Status: Accepted
+- Context: `dotnet ef` migration commands require an executable startup project with access to DbContext registration and `Microsoft.EntityFrameworkCore.Design`.
+- Options considered:
+  1. **Configure a separate CLI migration tool/project** — clean separation, but adds another project to the solution.
+  2. **Configure `Crawler.Api` as the startup project for EF migrations** with `Microsoft.EntityFrameworkCore.Design` added — standard ASP.NET Core pattern, minimal ceremony.
+- Decision & why: Option 2. `Crawler.Api` already configures PostgreSQL connection strings and DbContext registration for runtime, making it the natural startup project for design-time tooling.
+- Trade-off / cost accepted: `Crawler.Api` directly references `Microsoft.EntityFrameworkCore.Design`.
+- Revisit when: Architecture changes to separate migrations into a dedicated runner image or CLI container.
+
+
