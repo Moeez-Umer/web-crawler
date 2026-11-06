@@ -101,50 +101,51 @@ stateDiagram-v2
 
 ---
 
-## Message Lifecycle `[PLANNED]`
+## Message Lifecycle
 
 ```mermaid
 flowchart TD
-    A([API publishes CrawlPageTask]) --> B[crawl.exchange\ntype: direct]
-    B --> C[crawl.tasks queue\nDLX = crawl.dlx]
+    A([API / Worker publishes CrawlPageTask]) --> B[crawl.exchange\ntype: direct]
+    B --> C[crawl.tasks queue\nx-dead-letter-exchange = crawl.dlx]
 
     C --> D{Worker consumes\nmanual ack}
 
     D -- Success --> E[Process page\nwrite DB]
     E --> F{Publish children?}
     F -- Yes --> G[Publish to crawl.exchange]
-    F -- No --> H[ACK message]
-    E --> H
+    F -- No --> H[ACK original message]
+    G --> H
 
-    D -- Transient error\ntimeout / 5xx / DB deadlock --> I{attempt < 5?}
-    I -- Yes --> J[Publish to crawl.retry\nwith incremented attempt\nper-queue TTL]
-    J --> K[TTL expires → crawl.tasks\nvia crawl.dlx routing]
-    K --> C
-    I -- No --> L[NACK requeue=false\n→ crawl.dlx]
+    D -- Transient error\ntimeout / 5xx / DB deadlock --> I{attempt < MaxAttempts?}
+    I -- Yes --> J[Publish to crawl.retry\nattempt = attempt + 1\nx-message-ttl]
+    J --> K[ACK original message]
+    J -. TTL expires .-> L[Dead-letter to crawl.exchange\nrouting key = crawl]
+    L --> C
+    I -- No (budget exhausted) --> M[NACK requeue=false\n→ crawl.dlx]
 
-    D -- Permanent page error\n404 / 403 / non-HTML --> M[Record page as Failed\nDecrement pendingTasks\nACK]
+    D -- Permanent page error\n404 / 403 / non-HTML --> N[Record page as Failed in DB\nDecrement pendingTasks\nACK original message]
 
-    D -- Poison message\ndeserialize fail / invalid --> N[NACK requeue=false\n→ crawl.dlx]
+    D -- Poison message\ndeserialization fail / invalid --> O[NACK requeue=false\n→ crawl.dlx]
 
-    L --> O[crawl.dlx exchange]
-    N --> O
-    O --> P[crawl.tasks.dlq\ndead-letter queue]
+    M --> P[crawl.dlx exchange\ntype: fanout]
+    O --> P
+    P --> Q[crawl.tasks.dlq\ndead-letter queue]
 
-    P --> Q([Ops: inspect / replay / discard])
+    Q --> R([Ops: inspect / replay / discard])
 
-    style P fill:#c0392b,color:#fff
-    style Q fill:#8e44ad,color:#fff
+    style Q fill:#c0392b,color:#fff
+    style R fill:#8e44ad,color:#fff
     style H fill:#27ae60,color:#fff
-    style M fill:#e67e22,color:#fff
+    style N fill:#e67e22,color:#fff
 ```
 
 **Queue topology:**
 
-| Queue | Exchange | Binding | TTL | DLX |
-|---|---|---|---|---|
-| `crawl.tasks` | `crawl.exchange` | `crawl` | — | `crawl.dlx` |
-| `crawl.retry` | `crawl.retry.exchange` | `crawl.retry` | Configurable (e.g. 5 s) | `crawl.dlx` |
-| `crawl.tasks.dlq` | `crawl.dlx` | `#` | — | — |
+| Queue | Exchange / Entry | Routing Key | Arguments / Dead-Letter Configuration |
+|---|---|---|---|
+| `crawl.tasks` | `crawl.exchange` (direct) | `crawl` | `x-dead-letter-exchange = crawl.dlx` |
+| `crawl.retry` | Default exchange (direct) | `crawl.retry` | `x-message-ttl = RetryDelayMs`<br>`x-dead-letter-exchange = crawl.exchange`<br>`x-dead-letter-routing-key = crawl` |
+| `crawl.tasks.dlq` | `crawl.dlx` (fanout) | `""` (all) | Durable queue, unrouted/dead-letter storage |
 
 ---
 

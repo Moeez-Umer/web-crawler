@@ -79,26 +79,26 @@
 ---
 
 ### Phase 3 — RabbitMQ Topology + Publisher + Consumer + Retry + DLQ
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| `RabbitMqTopology` — declare exchanges and queues on startup | ⬜ |
-| `crawl.exchange` → `crawl.tasks` (DLX = `crawl.dlx`) | ⬜ |
-| `crawl.retry.exchange` → `crawl.retry` (TTL → DLX → `crawl.tasks`) | ⬜ |
-| `crawl.dlx` → `crawl.tasks.dlq` | ⬜ |
-| Durable queues, persistent messages, manual acks | ⬜ |
-| `CrawlTaskPublisher` — serialise and publish `CrawlPageTask` | ⬜ |
-| `CrawlTaskConsumer` — `BackgroundService`, prefetch configurable | ⬜ |
-| Retry logic: transient error → publish to `crawl.retry` with `attempt+1` | ⬜ |
-| Exhausted retries (attempt ≥ 5) → NACK `requeue=false` → DLQ | ⬜ |
-| Poison message → NACK `requeue=false` → DLQ | ⬜ |
-| Graceful shutdown: drain in-flight, stop consuming | ⬜ |
+| `RabbitMqTopology` — declare exchanges and queues on startup | ✅ |
+| `crawl.exchange` → `crawl.tasks` (DLX = `crawl.dlx`) | ✅ |
+| `crawl.retry` (TTL → DLX → `crawl.exchange` → `crawl.tasks`) | ✅ |
+| `crawl.dlx` → `crawl.tasks.dlq` | ✅ |
+| Durable queues, persistent messages, manual acks | ✅ |
+| `RabbitMqPublisher` — serialise, publisher confirms, headers | ✅ |
+| `RabbitMqConsumer` — `BackgroundService`, manual acks, prefetch | ✅ |
+| Retry logic: transient error → publish to `crawl.retry` with `attempt+1` | ✅ |
+| Exhausted retries (attempt ≥ MaxAttempts) → NACK `requeue=false` → DLQ | ✅ |
+| Poison message (deserialization failure) → NACK `requeue=false` → DLQ | ✅ |
+| Graceful shutdown: drain in-flight, stop consuming | ✅ |
+| Unit tests: `RetryPolicyTests` (pure logic) | ✅ (11 tests) |
 
-**Open issues:**
-- Confirm retry TTL default value (e.g. 5 000 ms with exponential per-attempt).
+**Open issues:** —
 
-**Next step:** Await "continue" from user, then implement broker layer.
+**Next step:** Await "continue" from user, then begin Phase 4 (Worker: PageFetcher, LinkExtractor, CrawlTaskProcessor, Idempotency, Completion Counter).
 
 ---
 

@@ -206,4 +206,33 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: A page that happens to have many repeated internal anchor tags will score higher than its unique-destination ratio. Acceptable; the ratio is a heuristic, not an exact metric.
 - Revisit when: Integration tests reveal that repeated anchor tags cause misleading ratios in practice.
 
+---
+
+### D-014: Retry via Re-Publish to Delayed TTL Queue Instead of NACK Requeue
+- Phase: 3
+- Status: Accepted
+- Context: When handling transient failures (timeouts, 5xx, 429, temporary network/DB issues), consumer must not lock up the queue or spin in a tight failure loop.
+- Options considered:
+  1. **NACK with requeue=true** — message is re-inserted at the front of `crawl.tasks` immediately. Causes immediate redelivery, hammering failing endpoints and blocking other messages in the queue.
+  2. **Thread.Sleep / Task.Delay before NACK** — blocks the consumer thread, stalling processing of other healthy tasks.
+  3. **Publish to dead-letter delayed retry queue and ACK original** — original message is acknowledged and removed; a new message with incremented `Attempt` is published to `crawl.retry`. A per-queue TTL delays it, and broker automatically dead-letters it back to `crawl.tasks`.
+- Decision & why: Option 3. It provides non-blocking, non-starving delayed redelivery. The consumer thread immediately moves on to the next task while the failed message waits out its delay.
+- Trade-off / cost accepted: Higher broker message churn (a retry publishes a new message and acks the old). New message receives a new AMQP delivery tag. Acceptable for our scale.
+- Revisit when: Retry requirements require dynamic per-message backoff intervals rather than per-queue TTL, where RabbitMQ delayed exchange plugin or multiple tier queues might be evaluated.
+
+---
+
+### D-015: Native AMQP DLX + TTL Architecture for Retries and Poison Messages
+- Phase: 3
+- Status: Accepted
+- Context: We need a reliable mechanism to manage dead-letter routing and delayed retries with zero external scheduler processes.
+- Options considered:
+  1. **RabbitMQ Delayed Message Exchange plugin (`rabbitmq_delayed_message_exchange`)** — allows per-message delay headers, but requires non-standard plugin installation in RabbitMQ container.
+  2. **External background scheduler (e.g. Quartz / Hangfire)** — polls a retry database table; adds significant moving parts.
+  3. **Standard AMQP DLX + TTL queues** — `crawl.tasks` has `x-dead-letter-exchange=crawl.dlx`. `crawl.retry` has `x-message-ttl` and `x-dead-letter-exchange=crawl.exchange` (`routingKey=crawl`).
+- Decision & why: Option 3. Works out-of-the-box with standard RabbitMQ 3 image, requires zero external plugins or schedulers, and guarantees reliable AMQP-level delivery.
+- Trade-off / cost accepted: Fixed TTL per queue rather than variable per-message backoff.
+- Revisit when: Exponential backoff with different delays per attempt requires multiple TTL retry queues or the delayed-exchange plugin.
+
+
 
