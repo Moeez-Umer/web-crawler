@@ -108,6 +108,27 @@ public class PageFetcherTests
     }
 
     [Fact]
+    public async Task FetchAsync_reads_body_under_2mb_fully()
+    {
+        var (fetcher, handler) = CreateFetcher();
+        const string prefix = "<html><body>";
+        const string suffix = "</body></html>";
+        int payloadLen = (2 * 1024 * 1024) - 100 - prefix.Length - suffix.Length;
+        var underLimitHtml = prefix + new string('x', payloadLen) + suffix;
+
+        handler.Response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(underLimitHtml, Encoding.UTF8, "text/html")
+        };
+
+        var result = await fetcher.FetchAsync("https://example.com/large-but-valid");
+
+        var success = result.Should().BeOfType<PageFetchResult.Success>().Subject;
+        success.Html.Length.Should().Be(underLimitHtml.Length);
+        success.Html.Should().StartWith(prefix).And.EndWith(suffix);
+    }
+
+    [Fact]
     public async Task FetchAsync_returns_permanent_when_body_exceeds_2mb()
     {
         var (fetcher, handler) = CreateFetcher();
@@ -123,14 +144,32 @@ public class PageFetcherTests
         result.Should().BeOfType<PageFetchResult.Permanent>()
             .Which.Reason.Should().Contain("2 MB");
     }
+
+    [Fact]
+    public async Task FetchAsync_sends_descriptive_UserAgent_header()
+    {
+        var (fetcher, handler) = CreateFetcher();
+        handler.Response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("<html><body>Hello</body></html>", Encoding.UTF8, "text/html")
+        };
+
+        await fetcher.FetchAsync("https://example.com/page");
+
+        handler.LastRequest.Should().NotBeNull();
+        handler.LastRequest!.Headers.UserAgent.ToString()
+            .Should().Contain("WebCrawler/1.0");
+    }
 }
 
 internal class TestHttpMessageHandler : HttpMessageHandler
 {
     public HttpResponseMessage Response { get; set; } = new(HttpStatusCode.OK);
+    public HttpRequestMessage? LastRequest { get; private set; }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        LastRequest = request;
         // Copy request URI into response if not set so FinalUrl resolution works
         Response.RequestMessage ??= request;
         return Task.FromResult(Response);

@@ -1,0 +1,15 @@
+**/.git
+**/.github
+**/.vs
+**/.idea
+**/.vscode
+**/bin
+**/obj
+**/out
+**/node_modules
+frontend/
+tests/
+docs/
+*.md
+.DS_Store
+

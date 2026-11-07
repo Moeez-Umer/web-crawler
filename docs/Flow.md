@@ -4,30 +4,32 @@
 
 ---
 
-## Purpose `[PLANNED]`
+## Purpose
 
-This document describes the **target runtime behaviour** of the web-crawler system: how a crawl job moves from submission to completion, how messages flow through the broker, how failures are handled, and what the data model looks like. It is the single reference for anyone reasoning about the system's moving parts.
+This document describes the **runtime behaviour** of the web-crawler system: how a crawl job moves from submission to completion, how messages flow through the broker, how failures are handled, and what the data model looks like. It is the single reference for anyone reasoning about the system's moving parts.
 
 ---
 
-## Actors `[PLANNED]`
+## Actors
 
 | Actor | Technology | Role |
 |---|---|---|
-| **UI** | React (Vite, port 5173) | Submits URLs, polls job status, renders the crawled-page tree |
+| **UI** `[PLANNED]` | React (Vite, port 5173) | Submits URLs, polls job status, renders the crawled-page tree |
 | **API** | ASP.NET Core Web API (port 5000) | Validates input, creates jobs, publishes root task, serves status and tree |
-| **Worker** | .NET Generic Host + BackgroundService | Consumes crawl tasks, fetches pages, extracts links, fans out child tasks |
+| **Worker** | .NET Generic Host + BackgroundService (health port 5001) | Consumes crawl tasks, fetches pages, extracts links, fans out child tasks |
 | **RabbitMQ** | RabbitMQ 3 (port 5672 / mgmt 15672) | Message broker: task queue, retry queue, dead-letter queue |
 | **PostgreSQL** | PostgreSQL 16 (port 5432) | Persistent store for jobs, pages, edges, processed-message log |
 
 ---
 
-## Happy Path `[PLANNED]`
+## Happy Path
+
+> Note: Backend flow (`API ↔ PostgreSQL ↔ RabbitMQ ↔ Worker`) is implemented; `UI` interactions are `[PLANNED]`.
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant UI
+    participant UI as UI [PLANNED]
     participant API
     participant DB as PostgreSQL
     participant MQ as RabbitMQ
@@ -42,13 +44,13 @@ sequenceDiagram
 
     MQ->>Worker: Deliver CrawlPageTask(depth=0)
     Worker->>DB: BEGIN TRANSACTION
-    Worker->>DB: INSERT processed_messages(messageId) — guard
     Worker->>DB: UPDATE crawl_jobs SET status=Running, startedAt=now() WHERE status=Pending
     Worker->>DB: COMMIT
     Worker->>Worker: Fetch HTML page (HTTP + Polly retry)
     Worker->>Worker: Extract & normalize links
     Worker->>DB: BEGIN TRANSACTION
-    Worker->>DB: INSERT crawled_pages ON CONFLICT DO NOTHING
+    Worker->>DB: INSERT processed_messages(messageId) — guard
+    Worker->>DB: INSERT crawled_pages ON CONFLICT DO UPDATE (where Pending)
     Worker->>DB: INSERT page_edges ON CONFLICT DO NOTHING
     Worker->>DB: UPDATE crawl_jobs SET pendingTasks = pendingTasks + N - 1, pagesCrawled = pagesCrawled + 1
     Worker->>DB: COMMIT
@@ -73,20 +75,22 @@ sequenceDiagram
     API->>DB: SELECT crawled_pages WHERE job_id = ?
     API->>DB: SELECT page_edges WHERE job_id = ?
     API->>API: Assemble tree in memory (BFS, first-discovery parent)
-    API-->>UI: TreeNode[] hierarchy
+    API-->>UI: TreeNode hierarchy
     UI->>User: Render page tree
 ```
 
 ---
 
-## Job State Machine `[PLANNED]`
+## Job State Machine
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending : POST /api/jobs (job created)
+    Pending --> Failed : Root task publish to RabbitMQ fails ("failed to enqueue")
+    Pending --> Canceled : POST /api/jobs/{id}/cancel
     Pending --> Running : Worker consumes depth-0 task
     Running --> Completed : pendingTasks reaches 0, root page OK
-    Running --> Failed : pendingTasks reaches 0, root page permanently failed
+    Running --> Failed : Root page permanently failed or dead-lettered
     Running --> Canceled : POST /api/jobs/{id}/cancel
     Completed --> [*]
     Failed --> [*]
@@ -94,10 +98,10 @@ stateDiagram-v2
 ```
 
 **Transition rules:**
+- `Pending → Failed`: triggered immediately in `JobService.CreateJobAsync` if publishing the root `CrawlPageTask` to RabbitMQ fails after the DB transaction commits (`failureReason = "failed to enqueue"`).
 - `Pending → Running`: triggered by the first consumed message; worker sets `startedAt` atomically only if current status is `Pending` (prevents races with duplicate delivery).
-- `Running → Completed / Failed`: triggered by the worker that decrements `pendingTasks` to 0.
-- `Running → Canceled`: triggered by the API cancel endpoint; subsequent worker messages for this job are ACKed and skipped.
-- There is **no** `Pending → Failed` path; if the root task is never consumed the job stays `Pending` indefinitely (timeout cleanup is a future improvement).
+- `Running → Completed / Failed`: triggered by the worker when `pendingTasks` reaches 0 (or when the depth-0 root page fails permanently / is dead-lettered).
+- `Pending / Running → Canceled`: triggered by `POST /api/jobs/{id}/cancel` (sets `completedAt = now()`); subsequent worker messages for this job are ACKed and skipped. Attempting to cancel an already terminal job returns `409 Conflict`.
 
 ---
 

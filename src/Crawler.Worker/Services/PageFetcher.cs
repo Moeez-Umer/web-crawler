@@ -10,6 +10,7 @@ namespace Crawler.Worker.Services;
 /// </summary>
 public class PageFetcher : IPageFetcher
 {
+    public const string DefaultUserAgent = "WebCrawler/1.0 (+https://your-domain.example/contact; set Crawler:UserAgent)";
     private const int BodyCapBytes = 2 * 1024 * 1024; // 2 MB
 
     private readonly HttpClient _http;
@@ -18,6 +19,10 @@ public class PageFetcher : IPageFetcher
     public PageFetcher(IHttpClientFactory factory, ILogger<PageFetcher> logger)
     {
         _http = factory.CreateClient("crawler");
+        if (_http.DefaultRequestHeaders.UserAgent.Count == 0)
+        {
+            _http.DefaultRequestHeaders.UserAgent.ParseAdd(DefaultUserAgent);
+        }
         _logger = logger;
     }
 
@@ -129,6 +134,23 @@ public class PageFetcher : IPageFetcher
             if (_read > _limit) LimitExceeded = true;
             return n;
         }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_read >= _limit)
+            {
+                LimitExceeded = true;
+                return 0;
+            }
+            int allowed = (int)Math.Min(buffer.Length, _limit - _read + 1);
+            int n = await _inner.ReadAsync(buffer[..allowed], cancellationToken);
+            _read += n;
+            if (_read > _limit) LimitExceeded = true;
+            return n;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
         protected override void Dispose(bool disposing)
         {

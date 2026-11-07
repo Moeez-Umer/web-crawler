@@ -130,30 +130,31 @@
 ---
 
 ### Phase 5 — API Endpoints + DTOs + Tree Builder + Health + Serilog + CORS + Dockerfiles
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| `POST /api/jobs` — validate URL, clamp maxDepth, return 201 + jobId | ⬜ |
-| `GET /api/jobs/{id}` — `JobSummary` DTO, 404 if missing | ⬜ |
-| `GET /api/jobs/{id}/tree` — in-memory BFS tree builder | ⬜ |
-| `GET /api/jobs` — paginated, newest first, pageSize capped at 100 | ⬜ |
-| `POST /api/jobs/{id}/cancel` — set Canceled status | ⬜ |
-| `GET /health` — liveness + readiness (DB + RabbitMQ) | ⬜ |
-| JSON camelCase + `JsonStringEnumConverter` for enums | ⬜ |
-| CORS allowing `http://localhost:5173` | ⬜ |
-| `ProblemDetails` global exception handler | ⬜ |
-| EF `MigrateAsync` on API startup | ⬜ |
-| Serilog JSON console + request logging | ⬜ |
-| Multi-stage `Dockerfile` for API | ⬜ |
-| Multi-stage `Dockerfile` for Worker | ⬜ |
-| `docker-compose.yml` updated: api + worker services with healthcheck dependencies | ⬜ |
+| `docs/api-contract.md` created as single source of truth (D-021) | ✅ |
+| `POST /api/jobs` — validate URL, clamp maxDepth, return 201 + jobId (503 on enqueue failure) | ✅ |
+| `GET /api/jobs/{id}` — `JobSummary` DTO, 404 if missing | ✅ |
+| `GET /api/jobs/{id}/tree` — in-memory BFS tree builder (`TreeBuilder`) | ✅ |
+| `GET /api/jobs` — paginated, newest first, pageSize capped at 100 | ✅ |
+| `POST /api/jobs/{id}/cancel` — set Canceled status, 409 if terminal (D-024) | ✅ |
+| `GET /health` — liveness + readiness (DB + RabbitMQ) | ✅ |
+| JSON camelCase + `JsonStringEnumConverter` for enums | ✅ |
+| CORS allowing `http://localhost:5173` | ✅ |
+| `ProblemDetails` global exception handler | ✅ |
+| EF `MigrateAsync` on API startup with bounded retry (D-023) | ✅ |
+| Serilog JSON console + `X-Correlation-Id` + `jobId` scope | ✅ |
+| Multi-stage `Dockerfile` for API | ✅ |
+| Multi-stage `Dockerfile` for Worker | ✅ |
+| `docker-compose.yml` updated: api + worker services with healthcheck dependencies | ✅ |
+| `tests/Crawler.Api.Tests` — TreeBuilder, URL/depth validation, publish failure, cancel | ✅ (28 tests) |
+| Configurable `User-Agent` header on `PageFetcher` (D-025) | ✅ |
 
-**Open issues:**
-- Confirm tree response shape (`TreeNode` with `children[]`).
-- Decide whether `GET /api/jobs/{id}/tree` returns 404 or empty tree while job is still running.
+**Open issues:** — (Resolved: `TreeNode` shape codified in `docs/api-contract.md` [D-021]; `GET /api/jobs/{id}/tree` returns `404 ProblemDetails` `"tree not available yet"` when no root page row exists yet [D-022]; `POST /api/jobs/{id}/cancel` implemented and verified [D-024]; configurable `User-Agent` added [D-025]).
 
-**Next step:** Await "continue" from user, then implement API layer.
+**Next step:** Await "continue" from user, then begin Phase 5.5 (React Frontend) or Phase 6 (Integration Tests).
 
 ---
 
@@ -216,7 +217,6 @@
 | OI-2 | Transactional outbox (D-009) | Post-7 | Dual-write is the current limitation; outbox relay is the correct next step |
 | OI-3 | Multi-replica API migration safety (D-010) | Post-7 | `MigrateAsync` on startup is not safe with >1 replica; needs dedicated migration job |
 | OI-4 | Job stall recovery | Post-7 | No timeout or recovery mechanism if `pending_tasks` never reaches 0 |
-| OI-5 | Cancel endpoint implementation order | 5 | Marked optional in SPEC; implement last within Phase 5 |
 | OI-6 | Frontend (React app) | Post-7 | `frontend/` left empty per SPEC; user will add it |
 | OI-7 | eTLD+1 host matching (D-008) | Post-7 | Strict host match is current policy; eTLD+1 would be friendlier but needs a public suffix library |
 

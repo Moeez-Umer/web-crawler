@@ -33,9 +33,13 @@ try
     builder.Services.AddScoped<ICrawlRepository, CrawlRepository>();
 
     // ── HTTP client for PageFetcher with Polly retry ──────────────────────────
+    var userAgent = builder.Configuration["Crawler:UserAgent"]
+        ?? PageFetcher.DefaultUserAgent;
+
     builder.Services.AddHttpClient("crawler", c =>
     {
         c.Timeout = TimeSpan.FromSeconds(10);
+        c.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
     })
     .AddPolicyHandler(CrawlerHttpPolicy.RetryPolicy());
 

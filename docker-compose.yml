@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: crawler
-      POSTGRES_PASSWORD: crawler_pass
-      POSTGRES_DB: crawlerdb
+      POSTGRES_USER: ${POSTGRES_USER:-crawler}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crawler_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-crawlerdb}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U crawler -d crawlerdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crawler} -d ${POSTGRES_DB:-crawlerdb}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -18,8 +18,8 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     environment:
-      RABBITMQ_DEFAULT_USER: crawler
-      RABBITMQ_DEFAULT_PASS: crawler_pass
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-crawler}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-crawler_pass}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -29,6 +29,67 @@ services:
       timeout: 10s
       retries: 5
 
+  api:
+    build:
+      context: .
+      dockerfile: src/Crawler.Api/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:5000
+      ConnectionStrings__CrawlerDb: ${CRAWLER_DB_CONNECTION:-Host=postgres;Port=5432;Database=crawlerdb;Username=crawler;Password=crawler_pass}
+      RabbitMq__HostName: ${RABBITMQ_HOST:-rabbitmq}
+      RabbitMq__Port: ${RABBITMQ_PORT:-5672}
+      RabbitMq__UserName: ${RABBITMQ_USER:-crawler}
+      RabbitMq__Password: ${RABBITMQ_PASS:-crawler_pass}
+      RabbitMq__MaxAttempts: ${CRAWLER_MAX_ATTEMPTS:-5}
+      RabbitMq__RetryDelayMs: ${CRAWLER_RETRY_DELAY_MS:-2000}
+      RabbitMq__PrefetchCount: ${CRAWLER_PREFETCH_COUNT:-10}
+      Crawler__MaxPages: ${CRAWLER_MAX_PAGES:-200}
+      Crawler__UserAgent: ${CRAWLER_USER_AGENT:-WebCrawler/1.0 (+https://your-domain.example/contact; set Crawler:UserAgent)}
+      Crawler__AllowedOrigins__0: ${CRAWLER_ALLOWED_ORIGIN:-http://localhost:5173}
+    ports:
+      - "127.0.0.1:${API_PORT:-5000}:5000"
+      - "[::1]:${API_PORT:-5000}:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    build:
+      context: .
+      dockerfile: src/Crawler.Worker/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:5001
+      ConnectionStrings__CrawlerDb: ${CRAWLER_DB_CONNECTION:-Host=postgres;Port=5432;Database=crawlerdb;Username=crawler;Password=crawler_pass}
+      RabbitMq__HostName: ${RABBITMQ_HOST:-rabbitmq}
+      RabbitMq__Port: ${RABBITMQ_PORT:-5672}
+      RabbitMq__UserName: ${RABBITMQ_USER:-crawler}
+      RabbitMq__Password: ${RABBITMQ_PASS:-crawler_pass}
+      RabbitMq__MaxAttempts: ${CRAWLER_MAX_ATTEMPTS:-5}
+      RabbitMq__RetryDelayMs: ${CRAWLER_RETRY_DELAY_MS:-2000}
+      RabbitMq__PrefetchCount: ${CRAWLER_PREFETCH_COUNT:-10}
+      Crawler__MaxPages: ${CRAWLER_MAX_PAGES:-200}
+      Crawler__UserAgent: ${CRAWLER_USER_AGENT:-WebCrawler/1.0 (+https://your-domain.example/contact; set Crawler:UserAgent)}
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5001/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   pgdata:
-

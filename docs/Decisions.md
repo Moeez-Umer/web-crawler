@@ -290,6 +290,114 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: One thread per consumer prefetch slot blocked during message processing. Documented as a known limitation.
 - Revisit when: Migrating to `RabbitMQ.Client` 7.x in a future modernization phase.
 
+---
+
+### D-021: Contract-First API Design & `PageStatus.Pending` Reconciliation in `SPEC.md`
+- Phase: 5
+- Status: Accepted
+- Context: Phase 4 introduced `PageStatus.Pending` (D-019) for child page placeholders, whereas `docs/SPEC.md` originally listed only `Crawled|Failed`. The API and future React frontend need a single authoritative contract.
+- Options considered:
+  1. **Filter out `Pending` pages in `TreeBuilder`**: Hides discovered-but-unfinished child URLs from the tree response.
+  2. **Include `Pending` in `TreeNode.status` (`"Crawled" | "Failed" | "Pending"`), codify `docs/api-contract.md` first, and reconcile `docs/SPEC.md`**: Keeps the API contract, domain model, and UI aligned.
+- Decision & why: Option 2. Writing `docs/api-contract.md` before any API code and reconciling `docs/SPEC.md` with a one-line clarification guarantees zero drift between backend serialization and frontend TypeScript types.
+- Trade-off / cost accepted: Clients rendering `TreeNode` must handle three page statuses (`Crawled`, `Failed`, `Pending`).
+- Revisit when: Never — the contract is now locked in `docs/api-contract.md`.
+
+---
+
+### D-022: `GET /api/jobs/{id}/tree` Returns `404 ProblemDetails` ("tree not available yet") Before Root Page Row Exists
+- Phase: 5
+- Status: Accepted
+- Context: Between `POST /api/jobs` (which inserts `CrawlJob`) and the worker finishing or dead-lettering the depth-0 root page (or when publishing the root task failed), `crawled_pages` has no depth-0 row for that job.
+- Options considered:
+  1. **Return `200 OK` with a synthetic root `TreeNode`**: Invents a fake `Pending` node in memory even when no page row exists.
+  2. **Return `404 Not Found` `ProblemDetails` with `detail: "tree not available yet"`**: Distinguishes a missing job (`"Crawl job '{id}' was not found."`) from a job whose root page has not been recorded yet.
+- Decision & why: Option 2. Avoids fabricating state that is not in PostgreSQL and gives clients a clear, explicit RFC 7807 `ProblemDetails` message (`"tree not available yet"`).
+- Trade-off / cost accepted: Clients should wait until job status is `Completed` (or inspect `detail`) before requesting `/tree`.
+- Revisit when: A future streaming/live-tree view wants partial trees before the root fetch finishes.
+
+---
+
+### D-023: Bounded-Retry EF Core Migrations on API Startup Only
+- Phase: 5
+- Status: Revisit
+- Context: In containerized deployments, even after `pg_isready` passes, PostgreSQL or RabbitMQ may briefly reject the first connection while completing startup initialization.
+- Options considered:
+  1. **Single-shot `MigrateAsync()` on both API and Worker**: Causes migration lock contention between API and Worker and crashes on transient startup hiccups.
+  2. **Bounded retry loop (up to 5 attempts, linear backoff) in API startup only; Worker never runs migrations**: Centralizes schema migration in one service (`Crawler.Api`) and absorbs transient startup races.
+- Decision & why: Option 2 (extending D-010). Running `Database.MigrateAsync()` and `RabbitMqTopology.Declare()` with a 5-attempt bounded retry in `Crawler.Api` makes `docker compose up --build` resilient while avoiding worker/API migration races.
+- Trade-off / cost accepted: Still subject to D-010's multi-replica API limitation in production.
+- Revisit when: Moving to multi-replica API deployments with a dedicated migration init job.
+
+---
+
+### D-024: Optional `POST /api/jobs/{id}/cancel` Endpoint Implemented
+- Phase: 5
+- Status: Accepted
+- Context: `SPEC.md` marks `POST /api/jobs/{id}/cancel` as optional (implement last in Phase 5). The Worker already skips and ACKs tasks for `Canceled` jobs.
+- Options considered:
+  1. **Cut the cancel endpoint**: Leaves the worker's cancel-skipping branch unreachable via HTTP.
+  2. **Implement `POST /api/jobs/{id}/cancel`**: Transitions `Pending` or `Running` jobs to `Canceled` with `CompletedAt = now()`, and returns `409 Conflict` `ProblemDetails` if the job is already in a terminal state (`Completed`, `Failed`, `Canceled`).
+- Decision & why: Option 2. The implementation is small, completes the job state machine end-to-end, and is covered by unit tests.
+- Trade-off / cost accepted: In-flight tasks already queued in RabbitMQ drain asynchronously as the worker consumes and ACKs them.
+- Revisit when: Immediate queue purging per job is needed.
+
+---
+
+### D-025: Configurable Descriptive `User-Agent` Header on `PageFetcher`
+- Phase: 5
+- Status: Accepted
+- Context: `HttpClient` in .NET sends no `User-Agent` header by default. Many CDNs and origin servers (such as Cloudflare in front of `www.iana.org`) block empty `User-Agent` requests with `403 Forbidden`, hiding real status codes like `404 Not Found` and preventing polite bot identification.
+- Options considered:
+  1. **Leave `User-Agent` empty**: Rejected by CDNs with `403 Forbidden`.
+  2. **Spoof a desktop browser `User-Agent`**: Deceptive and violates polite crawling practices.
+  3. **Send a configurable descriptive bot `User-Agent` (`Crawler:UserAgent`, default placeholder `WebCrawler/1.0 (+https://your-domain.example/contact; set Crawler:UserAgent)`)**: Identifies the crawler via configuration (`Crawler:UserAgent` / `CRAWLER_USER_AGENT`) and avoids hardcoding a fabricated URL.
+- Decision & why: Option 3. Configured on the named `"crawler"` `HttpClient` in `Crawler.Worker/Program.cs` (with a fallback in `PageFetcher` if no `User-Agent` was configured on the `HttpClient`). Operators should override `Crawler:UserAgent` (or `CRAWLER_USER_AGENT` in Docker Compose) with a real contact URL or email before crawling external sites.
+- Trade-off / cost accepted: Out-of-the-box config carries an RFC 2606 `.example` placeholder URL until configured by the operator; sites that explicitly block non-browser user agents may still return `403`, which `PageFetcher` classifies as a permanent failure.
+- Revisit when: `robots.txt` parsing is added and requires matching a specific bot token.
+
+---
+
+### D-026: Configurable `API_PORT` (Default 5000) and Loopback Port Binding for macOS AirPlay Conflict
+- Phase: 5
+- Status: Accepted
+- Context: On macOS (Monterey and later), `ControlCenter` (AirPlay Receiver) listens on wildcard `*:5000` (`0.0.0.0:5000` and `[::]:5000`). A default Docker port mapping of `"5000:5000"` (`0.0.0.0:5000`) fails to bind (`address already in use`), and binding only IPv4 `"127.0.0.1:5000:5000"` causes `http://localhost:5000` on IPv6 (`[::1]:5000`) to hit `ControlCenter` (`Server: AirTunes`, `403 Forbidden`).
+- Options considered:
+  1. **Change default API port away from 5000**: Diverges from `docs/SPEC.md` and `docs/api-contract.md` default URL (`http://localhost:5000`).
+  2. **Bind both IPv4 and IPv6 loopback (`127.0.0.1:${API_PORT:-5000}:5000` and `[::1]:${API_PORT:-5000}:5000`) with configurable `API_PORT` (default `5000`)**: Allows `http://localhost:5000` to reach the `api` container on macOS over both IPv4 and IPv6 while letting users override `API_PORT` if needed.
+- Decision & why: Option 2. Preserves the `5000` default from `SPEC.md`, avoids the macOS `AirPlay Receiver` wildcard listener conflict on loopback, and exposes `API_PORT` for custom host port mapping.
+- Trade-off / cost accepted: The API container binds to host loopback (`127.0.0.1` and `::1`) rather than LAN interfaces (`0.0.0.0`) by default.
+- Revisit when: Exposing the API container directly on a non-loopback host interface without a reverse proxy.
+
+---
+
+### D-027: Canceled Jobs Retain `Pending` Page Rows and Non-Zero `pending_tasks`
+- Phase: 5
+- Status: Accepted
+- Context: When `POST /api/jobs/{id}/cancel` transitions an active job to `Canceled`, child page placeholder rows (`status = 'Pending'`) already inserted by parent tasks exist in `crawled_pages`, and queued RabbitMQ tasks are skipped (`ACK`ed immediately) by the worker without decrementing `pending_tasks`.
+- Options considered:
+  1. **Delete `Pending` page rows and zero out `pending_tasks` on cancel**: Loses visibility into how many tasks were queued and which child URLs had already been discovered when the job was canceled.
+  2. **Have worker decrement `pending_tasks` as it drains canceled tasks**: Requires a DB write for every skipped message after the job is already in terminal `Canceled` status.
+  3. **Keep existing `Pending` page rows and leave `pending_tasks` at its cancellation-time value**: `CancelJobAsync` atomically sets `status = 'Canceled'` and `completed_at = now()`, and the worker skips queued tasks for `Canceled` jobs with a read-only status check.
+- Decision & why: Option 3. Keeps cancellation O(1) in PostgreSQL, allows the worker to drain remaining tasks without DB writes, and preserves the exact snapshot of discovered `Pending` URLs and in-flight queue count at cancellation time.
+- Trade-off / cost accepted: Canceled jobs retain `Pending` rows in `crawled_pages` and a non-zero `pendingTasks` count in `JobSummary`.
+- Revisit when: A future requirement demands purging unvisited child placeholders on cancellation.
+
+---
+
+### D-028: Crawl Tree Can Differ Between Runs When `MaxPages` Cap Is Hit
+- Phase: 5
+- Status: Accepted
+- Context: When crawling a site with more reachable pages than `MaxPages` (default 200), such as `https://books.toscrape.com` at `maxDepth: 2`, `CrawlTaskProcessor` stops admitting new child pages once `pages_crawled + pending_tasks + newlyInserted >= MaxPages` (D-016).
+- Options considered:
+  1. **Enforce deterministic global BFS ordering across the entire crawl**: Would require strict single-worker serialization and deterministic response latency across all target URLs.
+  2. **Accept that the crawled subtree can vary between runs when `MaxPages` truncates the frontier**: Small variations in HTTP response times, retry timing, or worker concurrency change the order in which depth-1 tasks finish and claim the remaining `MaxPages` budget for their depth-2 children.
+- Decision & why: Option 2. Asynchronous queue-driven crawling is naturally non-deterministic in completion order; any run still strictly respects `maxDepth` and `MaxPages` while building a valid first-discovery tree for the pages visited in that run.
+- Trade-off / cost accepted: Two crawls of the same large site that hit `MaxPages` may include different subsets of deeper child pages and different first-discovery parent assignments.
+- Revisit when: Deterministic crawl replay is required.
+
+
+
 
 
 

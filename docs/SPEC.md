@@ -33,7 +33,7 @@ Dependency rule: Domain depends on nothing. Infrastructure depends on Domain + C
 
 ## Domain model
 CrawlJob: Id (Guid), Url, MaxDepth, MaxPages, Status (Pending|Running|Completed|Failed|Canceled), CreatedAt, StartedAt, CompletedAt, FailureReason, PendingTasks (int), PagesCrawled (int)
-CrawledPage: Id, JobId, NormalizedUrl, Depth, DomainLinkRatio, TotalLinks, InternalLinks, Status (Crawled|Failed), Error, CrawledAt
+CrawledPage: Id, JobId, NormalizedUrl, Depth, DomainLinkRatio, TotalLinks, InternalLinks, Status (Crawled|Failed|Pending — Pending = child row inserted at discovery but not yet crawled, see D-019), Error, CrawledAt
 PageEdge: Id, JobId, ParentPageId, ChildUrl
 ProcessedMessage: MessageId (PK), ProcessedAt
 
