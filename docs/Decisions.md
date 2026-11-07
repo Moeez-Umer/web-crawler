@@ -517,6 +517,20 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: New environment variables added to `docker-compose.yml` must be kept in sync with `.env.example`.
 - Revisit when: Configuration moves to external secret managers in production.
 
+---
+
+### D-038: Explicit MSBuild `Link`/`TargetPath` for Test HTML Fixtures Across macOS `/tmp` Symlinks
+- Phase: 7
+- Status: Accepted
+- Context: On macOS, `/tmp` is a symbolic link to `/private/tmp`. When `dotnet test /tmp/<clone>/web-crawler.sln` is invoked via the symlinked `/tmp` path, MSBuild's glob evaluation on `<Content Include="Fixtures\**\*">` resolves the real path `/private/tmp/.../Fixtures/index.html` while `$(MSBuildProjectDirectory)` remains `/tmp/...`. Because the path prefixes differ, MSBuild's `AssignTargetPath` treats the matched files as outside the project directory and strips the `Fixtures/` subfolder, copying `index.html` flat into `bin/Debug/net8.0/index.html` instead of `bin/Debug/net8.0/Fixtures/index.html` and causing `DirectoryNotFoundException` in `FakeHttpHandler`.
+- Options considered:
+  1. **Require callers to resolve symlinks (`cd /private/tmp/...`) before running `dotnet test`**: Fragile and surprising when cloning into `/tmp` on macOS.
+  2. **Add explicit `<Link>Fixtures\%(RecursiveDir)%(Filename)%(Extension)</Link>` and `<TargetPath>Fixtures\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>` (after removing default SDK `Content`/`None` matches for `Fixtures\**\*`) in `Crawler.Worker.Tests.csproj`**: Forces MSBuild to preserve the `Fixtures/` output subdirectory regardless of whether the solution path traverses a symlink.
+- Decision & why: Option 2. Fixes the MSBuild packaging edge case so `dotnet test` succeeds identically whether invoked from `/tmp/...`, `/private/tmp/...`, or the working directory.
+- Trade-off / cost accepted: Four extra lines of MSBuild metadata in `tests/Crawler.Worker.Tests/Crawler.Worker.Tests.csproj`.
+- Revisit when: Never — deterministic output path metadata is standard MSBuild practice.
+
+
 
 
 

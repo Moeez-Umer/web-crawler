@@ -56,7 +56,10 @@ From the repository root:
 docker compose up --build -d
 ```
 
-Wait a few seconds for `postgres`, `rabbitmq`, `api`, and `worker` healthchecks to turn `healthy`:
+> [!NOTE]
+> **macOS Port 5000 (AirPlay Receiver):** By default, `docker-compose.yml` exposes the API on port `5000` bound to loopback (`127.0.0.1:5000` and `[::1]:5000`), which coexists with macOS `ControlCenter`'s wildcard `*:5000` listener while the container is running. If another service on your machine already binds `127.0.0.1:5000`, override `API_PORT` (e.g. `API_PORT=5080 docker compose up --build -d`). See [Configuring `API_PORT`](#5-configuring-api_port-macos-airplay-conflict-on-port-5000) below.
+
+Wait ~15–20 seconds for `postgres`, `rabbitmq`, `api`, and `worker` healthchecks to turn `healthy`:
 
 ```bash
 docker compose ps
@@ -93,18 +96,64 @@ Plain `docker compose up` starts only the backend services (`postgres`, `rabbitm
 
 ### 4. End-to-End `curl` Example (Create, Poll, Fetch Tree)
 
+The example below explicitly passes `"maxDepth": 1` (if omitted, `maxDepth` defaults to `2` and crawls up to `MaxPages = 200`). Against `https://books.toscrape.com`, `maxDepth: 1` crawls all 74 root + depth-1 pages in ~50 seconds:
+
 ```bash
-# 1. Create a crawl job (maxDepth=1)
+# 1. Create a crawl job (maxDepth=1; omit maxDepth to use the default of 2)
 JOB_ID=$(curl -s -X POST http://localhost:5000/api/jobs \
   -H "Content-Type: application/json" \
   -d '{"url":"https://books.toscrape.com","maxDepth":1}' | grep -oE '[0-9a-f-]{36}')
 echo "Created Job ID: $JOB_ID"
 
-# 2. Poll job summary until status is Completed
+# 2. Poll job summary until status is Completed (~50s for 74 pages at maxDepth=1)
 curl -s http://localhost:5000/api/jobs/$JOB_ID
+```
 
+Sample `GET /api/jobs/$JOB_ID` output once completed:
+```json
+{
+  "jobId": "7652c7b5-8bfd-4716-9526-e09457f99d24",
+  "url": "https://books.toscrape.com/",
+  "maxDepth": 1,
+  "status": "Completed",
+  "createdAt": "2026-11-07T08:08:20.377919Z",
+  "startedAt": "2026-11-07T08:08:20.752748Z",
+  "completedAt": "2026-11-07T08:09:10.926572Z",
+  "failureReason": null,
+  "pagesCrawled": 74,
+  "pendingTasks": 0
+}
+```
+
+Fetch the crawled page tree:
+```bash
 # 3. Fetch the crawled page tree once Completed
 curl -s http://localhost:5000/api/jobs/$JOB_ID/tree
+```
+
+Sample `GET /api/jobs/$JOB_ID/tree` output (first child shown):
+```json
+{
+  "url": "https://books.toscrape.com/",
+  "depth": 0,
+  "domainLinkRatio": 1,
+  "totalLinks": 94,
+  "internalLinks": 94,
+  "status": "Crawled",
+  "error": null,
+  "children": [
+    {
+      "url": "https://books.toscrape.com/index.html",
+      "depth": 1,
+      "domainLinkRatio": 1,
+      "totalLinks": 94,
+      "internalLinks": 94,
+      "status": "Crawled",
+      "error": null,
+      "children": []
+    }
+  ]
+}
 ```
 
 ### 5. Configuring `API_PORT` (macOS AirPlay Conflict on Port 5000)
@@ -156,6 +205,13 @@ dotnet test tests/Crawler.Worker.Tests --filter "FullyQualifiedName~Integration"
 ### What Skips When PostgreSQL Is Unavailable
 
 If PostgreSQL is not reachable at `localhost:5432` (or at `CRAWLER_TEST_DB`), `PostgresFixture` catches the connection error during fixture initialization and **gracefully skips** the 11 integration tests in `CrawlIntegrationTests` with a clear message (`PostgreSQL not reachable at localhost:5432...`) rather than failing the test run. All 125 unit tests in `Crawler.Domain.Tests`, `Crawler.Api.Tests`, and `Crawler.Worker.Tests` still execute and pass without Docker.
+
+### Continuous Integration (`.github/workflows/ci.yml`)
+
+A GitHub Actions workflow is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) to run on `push` and `pull_request`:
+- **`backend` job:** Sets up .NET 8, starts a `postgres:16` service container with a `pg_isready` healthcheck, sets `CRAWLER_TEST_DB` via workflow environment variables, and runs `dotnet restore`, `dotnet build`, and `dotnet test` (executing both unit and real PostgreSQL integration tests).
+- **`frontend` job:** Sets up Node 20 in `frontend/` and runs `npm ci`, `npm run lint`, and `npm run build`.
+- **Verification status:** The CI workflow file has **not been run** on a remote GitHub-hosted runner yet (as this submission is packaged locally); all underlying commands (`dotnet restore`, `dotnet build`, `dotnet test`, `npm ci`, `npm run lint`, `npm run build`) were verified locally from a clean clone.
 
 ---
 

@@ -24,9 +24,15 @@
     <ProjectReference Include="..\..\src\Crawler.Infrastructure\Crawler.Infrastructure.csproj" />
   </ItemGroup>
 
-  <!-- Copy HTML fixture files to test output directory -->
+  <!-- Copy HTML fixture files to test output directory.
+       Explicit Link/TargetPath preserves the Fixtures/ subfolder even when
+       built via a symlinked path such as /tmp -> /private/tmp on macOS. -->
   <ItemGroup>
+    <Content Remove="Fixtures\**\*" />
+    <None Remove="Fixtures\**\*" />
     <Content Include="Fixtures\**\*">
+      <Link>Fixtures\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <TargetPath>Fixtures\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

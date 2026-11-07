@@ -13,6 +13,9 @@
 - [ ] **Automated Test Suite:** `dotnet test` passes all 136 tests (unit + PostgreSQL integration tests, 0 failures, 0 skipped when Postgres is running).
 - [ ] **Frontend (Optional):** `docker compose --profile frontend up --build -d` (or `cd frontend && npm ci && npm run dev`) serves the React UI at `http://localhost:5173`, builds cleanly (`npm run build`), and passes ESLint (`npm run lint`).
 - [ ] **Documentation & CI:** `README.md`, `docs/SPEC.md`, `docs/Decisions.md`, `docs/Flow.md`, `docs/PROGRESS.md`, `docs/api-contract.md`, `docs/how-to-run-tests.md`, `.env.example`, and `.github/workflows/ci.yml` are present and up to date.
+- [ ] **Pre-Zip Checks:**
+  - Set `CRAWLER_USER_AGENT` / `Crawler:UserAgent` to your real contact URL/email if desired before packaging.
+  - Ensure `git status` is clean with zero untracked or uncommitted files (including `tests/Crawler.Worker.Tests/Fixtures/*.html`).
 
 ---
 
