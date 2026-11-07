@@ -210,32 +210,33 @@
 ---
 
 ### Phase 7 — README + CI + End-to-End Verification
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| `README.md` — overview + architecture diagram | ⬜ |
-| `README.md` — how to run (`docker compose up --build`) | ⬜ |
-| `README.md` — message schema | ⬜ |
-| `README.md` — idempotency strategy | ⬜ |
-| `README.md` — retry policy (transient vs permanent) | ⬜ |
-| `README.md` — DLQ handling | ⬜ |
-| `README.md` — SQL model + index rationale | ⬜ |
-| `README.md` — key architectural choices | ⬜ |
-| `README.md` — known limitations | ⬜ |
-| `README.md` — "What I implemented first and why" | ⬜ |
-| `README.md` — "What I cut and why" | ⬜ |
-| `README.md` — "What I'd do next" | ⬜ |
-| `.github/workflows/ci.yml` — restore, build, test on push/PR | ⬜ |
-| `docker compose up --build` succeeds | ⬜ |
-| `curl POST /api/jobs` against live stack returns jobId | ⬜ |
-| `curl GET /api/jobs/{id}` shows Completed status | ⬜ |
-| `curl GET /api/jobs/{id}/tree` returns populated tree | ⬜ |
+| `README.md` — overview + architecture diagram | ✅ |
+| `README.md` — how to run (`docker compose up --build`) | ✅ |
+| `README.md` — message schema | ✅ |
+| `README.md` — idempotency strategy | ✅ |
+| `README.md` — retry policy (transient vs permanent) | ✅ |
+| `README.md` — DLQ handling | ✅ |
+| `README.md` — SQL model + index rationale | ✅ |
+| `README.md` — key architectural choices | ✅ |
+| `README.md` — known limitations | ✅ |
+| `README.md` — "What I implemented first and why" | ✅ |
+| `README.md` — "What I cut and why" | ✅ |
+| `README.md` — "What I'd do next" | ✅ |
+| `.github/workflows/ci.yml` — restore, build, test on push/PR (with Postgres service + frontend job) | ✅ |
+| `.gitignore` review + `.env.example` + `SUBMISSION.md` | ✅ |
+| `docker compose up --build` succeeds (clean-clone verified) | ✅ |
+| `curl POST /api/jobs` against live stack returns jobId (`https://books.toscrape.com`) | ✅ |
+| `curl GET /api/jobs/{id}` shows Completed status (`pagesCrawled: 74, pendingTasks: 0`) | ✅ |
+| `curl GET /api/jobs/{id}/tree` returns populated tree | ✅ |
+| `dotnet test` against clean clone passes all 136 tests (48 Domain + 28 Api + 60 Worker) | ✅ |
 
-**Open issues:**
-- Choose a safe, small real-world site for end-to-end curl verification.
+**Open issues:** — (Resolved: end-to-end verification completed against `https://books.toscrape.com` from a clean clone; CI configured with `postgres:16` service container [D-036] and `.env.example` [D-037]).
 
-**Next step:** Await "continue" from user, then write README + CI and run end-to-end.
+**Next step:** All phases complete; ready for submission packaging (`SUBMISSION.md`).
 
 ---
 

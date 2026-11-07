@@ -1,6 +1,6 @@
 # System Flow — Web Crawler
 
-> **Tag convention:** Every section is marked `[PLANNED]` until the corresponding phase ships and passes tests. Tags will be removed incrementally as phases complete.
+> **Implementation status:** All phases (Phases 1–7, including the Phase 5.5 React frontend) are implemented and verified. There are no remaining `[PLANNED]` sections in this document.
 
 ---
 

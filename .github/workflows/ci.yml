@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  backend:
+    name: .NET 8 Restore, Build & Test (with PostgreSQL 16)
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: crawlerdb
+      POSTGRES_USER: crawler
+      POSTGRES_PASSWORD: crawler_pass
+      CRAWLER_TEST_DB: "Host=localhost;Port=5432;Database=crawlerdb;Username=crawler;Password=crawler_pass"
+      DOTNET_NOLOGO: "true"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crawler
+          POSTGRES_PASSWORD: crawler_pass
+          POSTGRES_DB: crawlerdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U crawler -d crawlerdb"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Run unit & integration tests
+        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
+
+  frontend:
+    name: Frontend Lint & Build (Node 20)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build
+

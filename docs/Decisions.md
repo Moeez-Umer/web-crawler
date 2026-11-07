@@ -491,6 +491,33 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: Does not test raw AMQP protocol byte framing; AMQP topology and consumer behaviors are already verified in Phase 3 and end-to-end Docker Compose.
 - Revisit when: End-to-end multi-process testing across real network boundaries is performed in Phase 7.
 
+---
+
+### D-036: GitHub Actions PostgreSQL 16 Service Container for Real Integration Tests in CI
+- Phase: 7
+- Status: Accepted
+- Context: `CrawlIntegrationTests` gracefully skip if PostgreSQL is unreachable (D-034). If GitHub Actions ran `dotnet test` without a database service, CI would silently skip all 11 database concurrency/idempotency integration scenarios.
+- Options considered:
+  1. **Run unit tests only in CI**: Fast, but leaves SQL upserts, migrations, and row-level locking untested on push/PR.
+  2. **Provision a `postgres:16` service container in `.github/workflows/ci.yml` with `pg_isready` healthcheck and wire `CRAWLER_TEST_DB` via workflow environment variables**: Ensures `PostgresFixture` connects and executes all 11 integration tests alongside the 125 unit tests on every push and pull request, while a parallel `frontend` job runs Node 20 `npm ci`, `npm run lint`, and `npm run build`.
+- Decision & why: Option 2. Gives full unit + real PostgreSQL integration test coverage and frontend static verification on every commit.
+- Trade-off / cost accepted: Adds ~5–10 seconds to CI job startup while the `postgres:16` service container initializes.
+- Revisit when: End-to-end Docker Compose smoke tests are added as a separate CI job.
+
+---
+
+### D-037: Root `.env.example` and `.gitignore` Hygiene for Clean-Clone Reproducibility
+- Phase: 7
+- Status: Accepted
+- Context: `docker-compose.yml` parameterizes credentials, ports (`API_PORT`, `FRONTEND_PORT`), worker tuning (`CRAWLER_MAX_PAGES`, `CRAWLER_MAX_ATTEMPTS`, `CRAWLER_RETRY_DELAY_MS`, `CRAWLER_PREFETCH_COUNT`), and `CRAWLER_USER_AGENT` via environment variables with safe defaults, while local overrides live in `.env`.
+- Options considered:
+  1. **Rely solely on inline `${VAR:-default}` syntax in `docker-compose.yml`**: Works out of the box, but reviewers have to read `docker-compose.yml` to discover tunable variables.
+  2. **Commit `.env.example` documenting all compose and test variables while ignoring `.env`, `.env.local`, `.env.*.local`, and `dist/` in root `.gitignore`**: Keeps `docker compose up --build` zero-config out of the box while giving operators a self-documented template for local overrides without risking accidental secret/artifact commits.
+- Decision & why: Option 2. Improves reviewer ergonomics and guarantees clean archives/clones.
+- Trade-off / cost accepted: New environment variables added to `docker-compose.yml` must be kept in sync with `.env.example`.
+- Revisit when: Configuration moves to external secret managers in production.
+
+
 
 
 
