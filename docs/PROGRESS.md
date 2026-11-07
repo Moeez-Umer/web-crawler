@@ -158,6 +158,30 @@
 
 ---
 
+### Phase 5.5 — React Frontend (`/frontend`)
+**Status:** ✅ Done
+
+| Deliverable | Done? |
+|---|---|
+| React 18 + TypeScript (strict) + Vite + React Router + TanStack Query scaffold | ✅ |
+| ESLint with `@typescript-eslint/no-explicit-any: "error"` | ✅ |
+| Single `frontend/src/index.css` with CSS custom properties (D-029) | ✅ |
+| `frontend/src/api/types.ts` copied verbatim from `docs/api-contract.md` | ✅ |
+| `frontend/src/api/client.ts` — typed fetchers + `ApiError` carrying `ProblemDetails` | ✅ |
+| `useJob` (2s polling until terminal state), `useJobTree` (terminal state + 404 → `null`), `useJobs` (`keepPreviousData`) (D-030) | ✅ |
+| `StartCrawlPage` (`/`) — URL validation, `maxDepth` 0..5, spinner, dismissible `ProblemDetails` banner | ✅ |
+| `JobDetailsPage` (`/jobs/:jobId`) — copyable ID, timestamps, duration, failure alert, indeterminate progress + live counters + `"Updating..."`, cancel note, summary cards, 404/error/skeleton states | ✅ |
+| `PageTree` — recursive WAI-ARIA `role="tree"` / `role="treeitem"`, `aria-expanded`, keyboard navigation, URL filter, expand/collapse all, collapsed beyond depth 1 by default, color-coded Domain Link Ratio bars (D-031) | ✅ |
+| `HistoryPage` (`/history`) — newest first, row click navigation, server-side pagination (10/20/50), skeleton/empty/error states | ✅ |
+| Optional `frontend` service in `docker-compose.yml` under `profiles: ["frontend"]` (D-032) | ✅ |
+| `npm install`, `npm run build`, `npm run lint`, and live end-to-end verification | ✅ |
+
+**Open issues:** —
+
+**Next step:** Await "continue" from user, then begin Phase 6 (Integration Tests).
+
+---
+
 ### Phase 6 — Integration Tests (HTML Fixtures + Duplicate Delivery Test)
 **Status:** ⬜ Not started
 
@@ -217,6 +241,5 @@
 | OI-2 | Transactional outbox (D-009) | Post-7 | Dual-write is the current limitation; outbox relay is the correct next step |
 | OI-3 | Multi-replica API migration safety (D-010) | Post-7 | `MigrateAsync` on startup is not safe with >1 replica; needs dedicated migration job |
 | OI-4 | Job stall recovery | Post-7 | No timeout or recovery mechanism if `pending_tasks` never reaches 0 |
-| OI-6 | Frontend (React app) | Post-7 | `frontend/` left empty per SPEC; user will add it |
 | OI-7 | eTLD+1 host matching (D-008) | Post-7 | Strict host match is current policy; eTLD+1 would be friendlier but needs a public suffix library |
 

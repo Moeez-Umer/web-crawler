@@ -14,7 +14,7 @@ This document describes the **runtime behaviour** of the web-crawler system: how
 
 | Actor | Technology | Role |
 |---|---|---|
-| **UI** `[PLANNED]` | React (Vite, port 5173) | Submits URLs, polls job status, renders the crawled-page tree |
+| **UI** | React 18 + TypeScript + Vite (port 5173) | Submits URLs, polls job status, lists job history, renders the crawled-page tree |
 | **API** | ASP.NET Core Web API (port 5000) | Validates input, creates jobs, publishes root task, serves status and tree |
 | **Worker** | .NET Generic Host + BackgroundService (health port 5001) | Consumes crawl tasks, fetches pages, extracts links, fans out child tasks |
 | **RabbitMQ** | RabbitMQ 3 (port 5672 / mgmt 15672) | Message broker: task queue, retry queue, dead-letter queue |
@@ -24,12 +24,10 @@ This document describes the **runtime behaviour** of the web-crawler system: how
 
 ## Happy Path
 
-> Note: Backend flow (`API ↔ PostgreSQL ↔ RabbitMQ ↔ Worker`) is implemented; `UI` interactions are `[PLANNED]`.
-
 ```mermaid
 sequenceDiagram
     actor User
-    participant UI as UI [PLANNED]
+    participant UI
     participant API
     participant DB as PostgreSQL
     participant MQ as RabbitMQ
@@ -281,4 +279,15 @@ erDiagram
 | **Worker crash after dead-letter commit, before NACK** | Crash after `OnDeadLetteredAsync` commits DB transaction, before `BasicNack(requeue=false)` is sent | Broker redelivers task. Redelivery triggers dead-letter path; `TryInsertProcessedMessageAsync` guard detects duplicate `messageId` and skips DB writes without double-decrementing `pending_tasks`; consumer then sends `BasicNack(requeue=false)` to move message to DLQ | Counter accurate; page marked Failed; message lands in DLQ |
 | **Dual-write failure** | DB commit succeeds; broker publish fails for child tasks | `pending_tasks` inflated; job stalls | Known limitation (D-009); manual recovery needed |
 | **Job canceled mid-crawl** | `POST /api/jobs/{id}/cancel` called | Worker checks job status at task start; if `Canceled`, ACK and skip processing | Job status set to `Canceled`; in-flight tasks discarded cleanly |
+
+---
+
+## Frontend
+
+The React 18 + TypeScript single-page application in `/frontend` communicates with `Crawler.Api` over `/api` (proxied to `http://127.0.0.1:5000` by Vite in development, or to `http://api:5000` by nginx when started via `docker compose --profile frontend up`):
+
+- **`/` (`StartCrawlPage`)**: Validates an absolute `http://` or `https://` URL and optional `maxDepth` (`0..5`, default `2`), submits `POST /api/jobs`, navigates to `/jobs/:jobId` on `201 Created`, or displays a dismissible `ProblemDetails` error banner on failure.
+- **`/jobs/:jobId` (`JobDetailsPage`)**: Polls `GET /api/jobs/:id` every 2 seconds via `useJob` while `status` is `Pending` or `Running` (showing an indeterminate progress bar, live `pagesCrawled` and `pendingTasks` counters, and a subtle `"Updating..."` indicator during refetches), and stops polling once `status` reaches `Completed`, `Failed`, or `Canceled`. In any terminal state, `useJobTree` requests `GET /api/jobs/:id/tree` (mapping `404` to a neutral empty state) and renders `SummaryCards` plus the recursive WAI-ARIA `PageTree` (root expanded, depth > 1 collapsed by default, URL substring filter, expand/collapse all, keyboard navigation, and color-coded Domain Link Ratio bars).
+- **`/history` (`HistoryPage`)**: Fetches paginated `GET /api/jobs?page=X&pageSize=Y` (`10`, `20`, or `50` per page) using `placeholderData: keepPreviousData`, rendering newest jobs first with row-click navigation to `/jobs/:jobId`.
+
 

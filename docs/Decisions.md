@@ -396,6 +396,76 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: Two crawls of the same large site that hit `MaxPages` may include different subsets of deeper child pages and different first-discovery parent assignments.
 - Revisit when: Deterministic crawl replay is required.
 
+---
+
+### D-029: Single Plain CSS Stylesheet with CSS Custom Properties (No UI Component Library)
+- Phase: 5.5
+- Status: Accepted
+- Context: The React frontend needs styling for forms, badges, tables, progress bars, skeletons, and the recursive page tree while keeping the dependency footprint small and prioritizing clarity over visual complexity.
+- Options considered:
+  1. **Component library (MUI / Chakra / Ant Design)**: Ships pre-built tree and table widgets, but adds heavy bundle weight, custom theming layers, and opaque DOM structures.
+  2. **Utility CSS framework (Tailwind CSS)**: Fast authoring, but adds PostCSS/Tailwind build configuration and verbose class strings across recursive tree markup.
+  3. **Plain CSS in a single `frontend/src/index.css` with CSS custom properties (`:root` variables)**: Zero runtime or build dependencies, explicit semantic class names, and dynamic state (such as Domain Link Ratio bar width) passed cleanly via inline CSS custom properties (`--ratio-width`).
+- Decision & why: Option 3. Keeps the frontend self-contained, transparent, and easy to inspect while enforcing consistent colors, spacing, and focus rings via `:root` variables.
+- Trade-off / cost accepted: All layout, badge, skeleton, and tree styles are maintained by hand in `index.css`.
+- Revisit when: The UI grows to dozens of screens requiring a shared multi-package design system.
+
+---
+
+### D-030: TanStack Query Polling with Terminal-State Cutoff and 404-Tolerant Tree Query
+- Phase: 5.5
+- Status: Accepted
+- Context: `JobDetailsPage` must poll `GET /api/jobs/:id` every 2 seconds while a job is `Pending` or `Running`, stop automatically at any terminal state (`Completed`, `Failed`, `Canceled`), and then fetch `GET /api/jobs/:id/tree` — which may return `404` (`"tree not available yet"`, D-022) if no root page row was recorded.
+- Options considered:
+  1. **Manual `setInterval` + `useEffect` `fetch` state machine**: Error-prone cleanup, manual race-condition guards on route changes, and manual retry logic.
+  2. **TanStack Query `useQuery` with state-driven `refetchInterval` and a dependent `useJobTree` hook**: `useJob` computes `refetchInterval` from `query.state.data?.status` (returning `false` for `Completed`, `Failed`, `Canceled`, or `404` errors), and `useJobTree` enables once `isTerminalJobStatus(job.status)` is true while catching `ApiError(404)` and returning `null`.
+- Decision & why: Option 2. Eliminates manual timer management, exposes `isFetching && !isPending` for the subtle `"Updating..."` indicator during background polls, and converts a missing tree `404` into a neutral empty state (`null`) without triggering error banners.
+- Trade-off / cost accepted: Adds `@tanstack/react-query` as a runtime dependency.
+- Revisit when: Server-Sent Events (SSE) or WebSockets replace HTTP polling for real-time job progress.
+
+---
+
+### D-031: Default Tree Expansion Capped at Depth 1 with WAI-ARIA Treeview Keyboard Navigation
+- Phase: 5.5
+- Status: Accepted
+- Context: A crawl job can return up to `MaxPages` (200) nodes in `GET /api/jobs/:id/tree`. Rendering all depths expanded by default creates a tall, hard-to-scan list, while collapsing the root node hides immediate child links.
+- Options considered:
+  1. **Expand all nodes by default**: Immediately overwhelms the viewport on 200-page crawls.
+  2. **Collapse all nodes including root**: Requires an extra click before seeing any discovered links.
+  3. **Expand only the depth-0 root by default (`expandedUrls = new Set([root.url])`), leaving depth-1 nodes visible and depth ≥ 2 collapsed**: Shows the root page and its immediate depth-1 children immediately while keeping deeper levels collapsed until the user expands a node, clicks `"Expand all"`, or enters a URL filter query.
+- Decision & why: Option 3, paired with WAI-ARIA `role="tree"` / `role="treeitem"`, `aria-expanded`, and roving keyboard handlers (`ArrowDown`, `ArrowUp`, `ArrowRight`, `ArrowLeft`, `Home`, `End`, `Enter`, `Space`).
+- Trade-off / cost accepted: Users must click a depth-1 chevron or `"Expand all"` to inspect depth-2+ nodes when no URL filter is active.
+- Revisit when: Tree sizes exceed thousands of nodes and require virtualized tree rendering.
+
+---
+
+### D-032: Optional Docker Compose Frontend Service Behind `frontend` Profile
+- Phase: 5.5
+- Status: Accepted
+- Context: During normal development, engineers run the Vite dev server (`npm run dev` on port `5173` proxying `/api` to `http://127.0.0.1:5000`), and plain `docker compose up` should only start backend infrastructure (`postgres`, `rabbitmq`, `api`, `worker`).
+- Options considered:
+  1. **Always start `frontend` in `docker compose up`**: Occupies host port `5173` by default, conflicting with the local Vite dev server.
+  2. **Omit `frontend` from `docker-compose.yml` entirely**: Provides no containerized way to run the full stack with nginx.
+  3. **Define `frontend` in `docker-compose.yml` under `profiles: ["frontend"]` using a multi-stage Node + nginx `Dockerfile`**: Plain `docker compose up` ignores `frontend`, leaving port `5173` free for Vite, while `docker compose --profile frontend up --build` builds the static bundle and serves it via nginx (proxying `/api/` to `http://api:5000/api/`).
+- Decision & why: Option 3. Supports both the local Vite workflow and containerized full-stack verification without port conflicts.
+- Trade-off / cost accepted: Starting the containerized UI requires passing `--profile frontend`.
+- Revisit when: A single unified production deployment manifest is introduced.
+
+---
+
+### D-033: Mapping Proxy/Gateway Errors and macOS `AirTunes` Port-5000 Fallback to `"Can't reach the server"`
+- Phase: 5.5
+- Status: Accepted
+- Context: On macOS, `ControlCenter` (AirPlay Receiver) listens on wildcard `*:5000` (`0.0.0.0:5000` and `[::]:5000`). While the Docker `api` container is running, its specific loopback bind (`127.0.0.1:5000` / `[::1]:5000`, D-026) takes precedence. However, when the `api` container is stopped (`docker compose stop api`), Docker unbinds `127.0.0.1:5000` and connections to `http://127.0.0.1:5000` fall back to `ControlCenter`, which returns `HTTP/1.1 403 Forbidden` with `Server: AirTunes/...` instead of `ECONNREFUSED`. Additionally, when AirPlay is disabled and nothing listens on `:5000`, Vite's default `http-proxy` returns `500` on `ECONNREFUSED`.
+- Options considered:
+  1. **Leave Vite proxy defaults and surface raw HTTP status strings (`Request failed with status 403` / `500`)**: Confuses users with a misleading `403` from macOS `ControlCenter` when the backend container is actually stopped.
+  2. **Convert proxy connection errors (`ECONNREFUSED`) and `Server: AirTunes` responses to `502 Bad Gateway` in `vite.config.ts`, and map network errors (`status = 0`) plus `502`/`503`/`504` to `"Can't reach the server"` in `ApiError`**: Aligns Vite's dev proxy with nginx (`502 Bad Gateway`) when the upstream API is down, neutralizes the macOS AirPlay Receiver `403` fallback when the `api` container stops, and presents a clear `"Can't reach the server"` message with a `Retry` button.
+- Decision & why: Option 2. Gives users an accurate, actionable `"Can't reach the server"` message across network drops, gateway failures (`502`/`503`/`504`), and stopped local containers on macOS, while still preserving `error.problemDetails.detail` on `ApiError.problemDetails` for `POST /api/jobs` `503` responses.
+- Trade-off / cost accepted: Custom `configure` hook in `frontend/vite.config.ts` inspects the upstream `Server` header for `"AirTunes"`.
+- Revisit when: Default API port is moved off `5000`.
+
+
+
 
 
 
