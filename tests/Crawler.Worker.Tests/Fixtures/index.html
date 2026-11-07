@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Index</title></head>
+<body>
+  <h1>Index Page</h1>
+
+  <!-- Normal internal links -->
+  <a href="about.html">About</a>
+  <a href="contact.html">Contact</a>
+
+  <!-- DUPLICATE of about.html — counts twice in D-013 -->
+  <a href="about.html">About (duplicate)</a>
+
+  <!-- Fragment-only link: normalizes to this page (https://site.test/index.html) — internal -->
+  <a href="#team">Team</a>
+
+  <!-- Fragment link to about with anchor: fragment stripped → https://site.test/about.html — internal -->
+  <a href="about.html#bio">About Bio</a>
+
+  <!-- Relative link with ./ and ../ segments: ./sub/../contact.html → https://site.test/contact.html — internal -->
+  <a href="./sub/../contact.html">Contact via relative</a>
+
+  <!-- Uppercase-host variant: HTTPS://SITE.TEST/about.html → lowercased → https://site.test/about.html — internal -->
+  <a href="HTTPS://SITE.TEST/about.html">About (uppercase host)</a>
+
+  <!-- External link — counts in totalLinks but NOT internal -->
+  <a href="https://other.example/">External site</a>
+
+  <!-- Invalid/non-crawlable schemes — UrlNormalizer returns null, NOT counted in totalLinks -->
+  <a href="mailto:info@site.test">Email</a>
+  <a href="tel:+1234567890">Phone</a>
+  <a href="javascript:void(0)">JS link</a>
+
+  <!-- Broken page (served as 404) — internal, counts in totalLinks -->
+  <a href="broken.html">Broken</a>
+
+  <!-- Image (served as image/png) — internal, counts in totalLinks -->
+  <a href="logo.png">Logo</a>
+
+  <!--
+    DomainLinkRatio hand computation (D-013: each occurrence counts):
+    Valid (non-null) normalized hrefs = TotalLinks = 10:
+      1. about.html          → https://site.test/about.html          internal
+      2. contact.html        → https://site.test/contact.html         internal
+      3. about.html (dup)    → https://site.test/about.html          internal
+      4. #team               → https://site.test/index.html           internal  (fragment stripped)
+      5. about.html#bio      → https://site.test/about.html          internal  (fragment stripped)
+      6. ./sub/../contact.html → https://site.test/contact.html       internal  (./ and ../ resolved)
+      7. HTTPS://SITE.TEST/about.html → https://site.test/about.html internal  (host lowercased)
+      8. https://other.example/ → https://other.example/             EXTERNAL
+      9. broken.html         → https://site.test/broken.html         internal
+     10. logo.png            → https://site.test/logo.png            internal
+    mailto / tel / javascript → UrlNormalizer returns null → ignored
+
+    TotalLinks    = 10
+    InternalLinks = 9  (all except #8 other.example)
+    DomainLinkRatio = 9 / 10 = 0.9
+  -->
+</body>
+</html>
+

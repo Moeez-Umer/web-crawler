@@ -183,23 +183,29 @@
 ---
 
 ### Phase 6 — Integration Tests (HTML Fixtures + Duplicate Delivery Test)
-**Status:** ⬜ Not started
+**Status:** ✅ Done
 
 | Deliverable | Done? |
 |---|---|
-| HTML fixtures: `index.html`, `about.html`, `contact.html` (external link, mailto, duplicate, fragment) | ⬜ |
-| In-process test HTTP server or fake `HttpMessageHandler` serving fixtures | ⬜ |
-| Test DB: in-memory or Testcontainers PostgreSQL | ⬜ |
-| Fake publisher: captures published messages without broker | ⬜ |
-| Integration test: crawl fixture site, assert pages + edges + ratios | ⬜ |
-| Integration test: no duplicate rows on first crawl | ⬜ |
-| Integration test: same message delivered twice → no duplicate rows, counter not double-decremented | ⬜ |
-| All tests pass: `dotnet test` | ⬜ |
+| HTML fixtures: `index.html`, `about.html`, `contact.html`, `base-href.html`, `transient-parent.html` | ✅ |
+| In-process `FakeHttpHandler` serving fixtures with status codes (200, 404, 500, image/png) | ✅ |
+| Test DB: real PostgreSQL with unique schema isolation per test class (D-034) | ✅ |
+| Fake publisher (`InMemoryPublisher`) + multi-strategy `BrokerPump` (FIFO, reverse, N-times, concurrent) | ✅ |
+| Scenario 1: full crawl to completion (pages, statuses, edges, Domain Link Ratio 0.9, job counters) | ✅ |
+| Scenario 2: duplicate delivery (every task replayed 2×, one 3×; zero extra rows/tasks/counter drifts) | ✅ |
+| Scenario 3: out-of-order delivery (reverse order yields identical final state) | ✅ |
+| Scenario 4: concurrent delivery (two siblings concurrently + same message twice; counter never negative) | ✅ |
+| Scenario 5: limits (MaxDepth 0 restricts depth; MaxPages 1 halts expansion with 0 pending) | ✅ |
+| Scenario 6: root failure (root 404 fails job with reason and 0 pending) | ✅ |
+| Scenario 7: transient 500 then dead-letter (OnDeadLetteredAsync marks Failed, double DL idempotent) | ✅ |
+| Scenario 8: base href (<base href="https://site.test/sub/"> relative link resolution) | ✅ |
+| Scenario 9: job isolation (parallel crawls of same URLs in separate jobs do not interfere) | ✅ |
+| Scenario 10: API-to-worker handoff (clean DB with pendingTasks=1 transitions to Running then Completed) | ✅ |
+| All tests pass: `dotnet test` (60 passed in Worker.Tests, 136 passed solution-wide) | ✅ |
 
-**Open issues:**
-- Decide whether to use Testcontainers (real Postgres) or SQLite for integration tests; Testcontainers preferred for `ON CONFLICT` syntax compatibility.
+**Open issues:** — (Resolved: real PostgreSQL used via schema-per-test-class isolation [D-034]; in-process `FakeHttpHandler` + `BrokerPump` [D-035]).
 
-**Next step:** Await "continue" from user, then implement integration tests.
+**Next step:** Await "continue" from user, then begin Phase 7 (README + CI + End-to-End Verification).
 
 ---
 

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Base Href Test</title>
+  <!-- base href changes the resolution base for all relative links below -->
+  <base href="https://site.test/sub/">
+</head>
+<body>
+  <h1>Base Href Page</h1>
+
+  <!-- Relative links resolved against https://site.test/sub/ (not the page URL) -->
+  <a href="page.html">Sub page</a>          <!-- → https://site.test/sub/page.html -->
+  <a href="../about.html">About</a>          <!-- → https://site.test/about.html   -->
+  <a href="https://other.example/">External</a> <!-- absolute — unaffected by base -->
+</body>
+</html>
+

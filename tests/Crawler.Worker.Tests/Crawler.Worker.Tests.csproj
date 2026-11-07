@@ -15,11 +15,20 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="FluentAssertions" Version="6.12.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Crawler.Worker\Crawler.Worker.csproj" />
     <ProjectReference Include="..\..\src\Crawler.Infrastructure\Crawler.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!-- Copy HTML fixture files to test output directory -->
+  <ItemGroup>
+    <Content Include="Fixtures\**\*">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>
 

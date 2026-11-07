@@ -464,6 +464,33 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: Custom `configure` hook in `frontend/vite.config.ts` inspects the upstream `Server` header for `"AirTunes"`.
 - Revisit when: Default API port is moved off `5000`.
 
+---
+
+### D-034: Schema-Per-Test-Class Isolation Against Real PostgreSQL
+- Phase: 6
+- Status: Accepted
+- Context: Integration tests for `CrawlTaskProcessor` must verify atomic SQL semantics: `ON CONFLICT DO NOTHING` on `processed_messages` and `page_edges`, `ON CONFLICT (job_id, normalized_url) DO UPDATE ... WHERE status='Pending'` on `crawled_pages`, and atomic `pending_tasks` counter decrements with row-level locks under concurrent delivery. EF Core's InMemory provider and SQLite cannot execute PostgreSQL dialect raw SQL or provide PG locking semantics.
+- Options considered:
+  1. **In-memory provider / mocks only**: Fast, but completely incapable of executing raw SQL upserts or proving true database idempotency.
+  2. **Testcontainers PostgreSQL**: Automatically boots a dedicated container per run, but requires Docker socket access, adds cold-start container spin-up overhead (~5-10s), and conflicts if Docker-in-Docker is restricted.
+  3. **Real PostgreSQL with unique schema per test class**: Uses the PostgreSQL instance already running via Docker Compose (`localhost:5432`). Each test class creates a dedicated schema (`test_{guid}`), runs EF migrations within that schema, and drops the schema on teardown. If Postgres is unreachable, tests skip gracefully with a clear message.
+- Decision & why: Option 3. Gives 100% genuine PostgreSQL behavior with native `ON CONFLICT` execution and concurrency guarantees while keeping test runs sub-second (no container boot penalty) and zero new test dependencies.
+- Trade-off / cost accepted: Requires the local `postgres` container from `docker-compose.yml` to be running on `localhost:5432` (or set via `CRAWLER_TEST_DB`). If not running, the integration suite skips.
+- Revisit when: CI environment prefers fully dynamic throwaway database containers via Testcontainers.
+
+---
+
+### D-035: In-Process `HttpMessageHandler` and Memory Broker Pump for Integration Testing
+- Phase: 6
+- Status: Accepted
+- Context: We need to test the real `CrawlTaskProcessor`, `LinkExtractor`, and `PageFetcher` pipeline across diverse network and delivery scenarios (cycles, limits, duplicates, out-of-order, concurrency, dead-letter, base href) deterministically without external web dependencies or live RabbitMQ cluster churn.
+- Options considered:
+  1. **Spin up a local Kestrel HTTP server and live RabbitMQ broker**: Heavyweight, introduces socket port conflicts, flaky timing for retry TTLs and DLQ routing.
+  2. **In-process fake `HttpMessageHandler` and an in-memory `BrokerPump`**: `FakeHttpHandler` serves local disk HTML fixtures (`index.html`, `about.html`, `contact.html`, `base-href.html`, `transient-parent.html`) with deterministic HTTP response codes (404, 500, `image/png`). `InMemoryPublisher` collects published `CrawlPageTask` messages, and `BrokerPump` drives them into the processor with selectable dispatch policies (FIFO, reverse, N-times replay, concurrent pairs).
+- Decision & why: Option 2. Executes the full business logic, HTML parsing, link extraction, Domain Link Ratio computation, idempotency guards, and completion counters synchronously and deterministically in under 2 seconds.
+- Trade-off / cost accepted: Does not test raw AMQP protocol byte framing; AMQP topology and consumer behaviors are already verified in Phase 3 and end-to-end Docker Compose.
+- Revisit when: End-to-end multi-process testing across real network boundaries is performed in Phase 7.
+
 
 
 
