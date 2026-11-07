@@ -117,6 +117,7 @@
 | `pending_tasks` counter: atomic `UPDATE ... RETURNING` | ✅ |
 | Completion detection: if `RETURNING = 0`, mark job Completed/Failed | ✅ |
 | Permanent page failure: record page as Failed, ACK, decrement counter | ✅ |
+| DLQ finalization: `OnDeadLetteredAsync` decrements `pending_tasks`, marks page Failed (D-018) | ✅ |
 | Root page permanent failure: set job status to Failed | ✅ |
 | Canceled job: ACK and skip | ✅ |
 | Worker `/health` endpoint (Kestrel on separate port 5001) | ✅ |

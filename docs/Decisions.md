@@ -248,6 +248,49 @@ Every non-trivial architectural or design choice is recorded here so future cont
 - Trade-off / cost accepted: Worker process runs a lightweight web server, consuming marginally more memory than a pure headless Worker SDK process.
 - Revisit when: Extreme memory optimization in low-resource environments requires a purely headless worker.
 
+---
+
+### D-018: Dead-Letter Finalization Order and Fallback
+- Phase: 4
+- Status: Accepted
+- Context: When retries are exhausted or a message is poison, sending the task to DLQ without updating PostgreSQL leaves `pending_tasks` un-decremented and the job permanently unfinished.
+- Options considered:
+  1. **Nack to DLQ first, then finalize DB**: If the worker crashes or DB fails after NACK, the task is already dead-lettered and `pending_tasks` is permanently leaked.
+  2. **DB finalization first; if it commits, NACK to DLQ; if DB throws, treat as transient**: Run DB finalization (`OnDeadLetteredAsync`: mark page Failed, decrement `pending_tasks`, finalize job if 0) and commit before sending NACK. If DB throws, do not NACK; republish to `crawl.retry` with unchanged Attempt so the task is not lost and is re-attempted once DB recovers.
+  3. **DLQ monitor / sweeper job**: External process polls DLQ and updates database; adds extra moving parts.
+- Decision & why: Option 2. Guarantees that no task enters the DLQ while still counted as pending in PostgreSQL. If the database is experiencing an outage or deadlock at the moment of dead-lettering, republishing with the same attempt keeps the task alive until the DB is available to commit the finalization.
+- Trade-off / cost accepted: Temporary DB failure during DLQ routing delays DLQ delivery by one retry interval.
+- Revisit when: A dedicated transactional outbox or change data capture (CDC) pipeline manages DLQ state transitions.
+
+---
+
+### D-019: Page Discovery Placeholder (`PageStatus.Pending`)
+- Phase: 4
+- Status: Accepted
+- Context: When parent pages discover children, they insert child page rows to reserve URLs and track tree depth. If a task fails or dead-letters, it must not overwrite a previously crawled page with `PageStatus.Failed`.
+- Options considered:
+  1. **Only insert pages when crawled**: Child URLs only exist as edges until fetched; complicates BFS tree and duplicate tracking.
+  2. **Insert child rows as Crawled upfront**: Prematurely marks unvisited pages as crawled.
+  3. **Insert child rows with `PageStatus.Pending` placeholder; upgrade on fetch**: Child placeholder is created with `status = 'Pending'`. `RecordPageResultAsync` updates status and stats only `WHERE status = 'Pending'` or on new insert. If a page is already `Crawled`, a subsequent failure (e.g. from a redundant delivery) is ignored.
+- Decision & why: Option 3. Maintains the full graph of discovered links while protecting successfully crawled pages from being downgraded to `Failed`.
+- Trade-off / cost accepted: Introduces a third `PageStatus` enum value (`Pending`) alongside `Crawled` and `Failed`.
+- Revisit when: Tree representation shifts to an alternate graph schema.
+
+---
+
+### D-020: Consumer Sync/Async Boundary (RabbitMQ.Client 6.x)
+- Phase: 4
+- Status: Accepted
+- Context: `RabbitMQ.Client` 6.8 `EventingBasicConsumer.Received` is a synchronous event handler (`EventHandler<BasicDeliverEventArgs>`). Our domain/pipeline logic (`DeliveryProcessor.ProcessAsync`, `ICrawlTaskHandler`) is asynchronous (`Task`-based).
+- Options considered:
+  1. **`AsyncEventingBasicConsumer` with `DispatchConsumersAsync = true`**: RabbitMQ.Client 6.x supports async consumer, but requires setting `DispatchConsumersAsync = true` on the `ConnectionFactory`. Channels created under this mode must handle async dispatch strictly.
+  2. **Single sync-over-async block at the boundary**: Keep `EventingBasicConsumer`, encapsulate all delivery orchestration in `DeliveryProcessor.ProcessAsync`, and call `.GetAwaiter().GetResult()` at exactly one location in `RabbitMqConsumer.OnMessageReceived`. This also pins the lifetime of `ea.Body` memory buffer during processing.
+  3. **Upgrade to RabbitMQ.Client 7.x**: 7.x is completely async-first with native `IChannel` and async pipelines, but is a major breaking change across the entire codebase.
+- Decision & why: Option 2 for Phase 4. Having a single boundary call in `RabbitMqConsumer` isolates the sync/async impedance mismatch to one line while keeping `DeliveryProcessor` fully asynchronous, testable, and broker-agnostic.
+- Trade-off / cost accepted: One thread per consumer prefetch slot blocked during message processing. Documented as a known limitation.
+- Revisit when: Migrating to `RabbitMQ.Client` 7.x in a future modernization phase.
+
+
 
 
 

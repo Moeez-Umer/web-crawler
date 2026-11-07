@@ -261,16 +261,20 @@ erDiagram
 
 ---
 
-## Failure Paths `[PLANNED]`
+## Failure Paths
 
 | Failure type | Examples | Worker action | Job outcome |
 |---|---|---|---|
-| **Transient** | HTTP timeout, 5xx, 429, network error, DB deadlock | NACK → publish to `crawl.retry` with `attempt+1`; retry up to 5 times with exponential backoff | Job continues; task retried |
+| **Transient** | HTTP timeout, 5xx, 429, network error, DB deadlock | Publish to `crawl.retry` with `attempt+1` (TTL delay, dead-letters back to `crawl.tasks`); ACK original message | Job continues; task retried up to `MaxAttempts` |
 | **Permanent (page-level)** | HTTP 404, 403, non-HTML content-type, URL rejected by normalizer | Record `CrawledPage` with `status=Failed` + error message; decrement `pending_tasks`; ACK | Job continues; that page marked failed |
 | **Root page permanent failure** | Depth-0 task receives 404 / 403 / parse error | Same as permanent page-level, but also set `crawl_jobs.status=Failed`, `failure_reason=...` | Job marked `Failed` |
-| **Poison / exhausted** | Deserialization error, invalid message schema, attempt ≥ 5 | NACK `requeue=false` → broker routes to DLQ; decrement `pending_tasks` | Job may still complete if other tasks succeed; DLQ entry requires ops review |
+| **Dead-letter: retries exhausted** | Attempt ≥ MaxAttempts on transient error | `OnDeadLetteredAsync`: record page as `Failed`, decrement `pending_tasks`, finalize job if 0. Commit DB, then `NACK requeue=false` → `crawl.tasks.dlq` (D-018) | Counter accurate; job completes or fails; task in DLQ for ops inspection |
+| **Dead-letter: poison task** | Valid JSON schema but logically poison result | Same as retries exhausted (`OnDeadLetteredAsync` commits DB first, then `NACK requeue=false` → DLQ) | Counter accurate; page marked Failed; task in DLQ |
+| **Dead-letter: deserialization failure** | Corrupted JSON or unparseable payload | No `jobId` available; log error and `NACK requeue=false` → DLQ immediately without DB finalization | Message routed to DLQ; ops inspection required |
+| **Dead-letter finalization DB failure** | Database unreachable during `OnDeadLetteredAsync` | Do NOT nack; republish to `crawl.retry` with unchanged `Attempt` and ACK original | Task preserved; redelivered once DB recovers to finalize cleanly |
 | **Worker crash mid-processing** | Crash after DB commit, before ACK | Broker redelivers; `ProcessedMessages` guard prevents double-processing; ACK on redelivery | No corruption; task processed exactly once |
 | **Worker crash after publish, before ACK** | Crash after child tasks published but before ACKing parent | Broker redelivers parent; `ProcessedMessages` guard fires; child tasks may be duplicated in broker | Child tasks processed idempotently via `ON CONFLICT DO NOTHING` on page/edge inserts; `pending_tasks` counter may be over-incremented if dual-write guard is not in place (known limitation — D-009) |
+| **Worker crash after dead-letter commit, before NACK** | Crash after `OnDeadLetteredAsync` commits DB transaction, before `BasicNack(requeue=false)` is sent | Broker redelivers task. Redelivery triggers dead-letter path; `TryInsertProcessedMessageAsync` guard detects duplicate `messageId` and skips DB writes without double-decrementing `pending_tasks`; consumer then sends `BasicNack(requeue=false)` to move message to DLQ | Counter accurate; page marked Failed; message lands in DLQ |
 | **Dual-write failure** | DB commit succeeds; broker publish fails for child tasks | `pending_tasks` inflated; job stalls | Known limitation (D-009); manual recovery needed |
 | **Job canceled mid-crawl** | `POST /api/jobs/{id}/cancel` called | Worker checks job status at task start; if `Canceled`, ACK and skip processing | Job status set to `Canceled`; in-flight tasks discarded cleanly |
 

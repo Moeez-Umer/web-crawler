@@ -1,362 +1,346 @@
 using Crawler.Contracts;
 using Crawler.Domain.Entities;
 using Crawler.Domain.Enums;
-using Crawler.Infrastructure.Data;
 using Crawler.Infrastructure.Messaging;
-using Crawler.Infrastructure.Persistence;
 using Crawler.Worker.Services;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Crawler.Worker.Tests;
 
 /// <summary>
-/// Unit tests for CrawlTaskProcessor.
-/// Uses an in-memory SQLite substitute via a fake repository so we don't
-/// need a real Postgres in unit tests (integration tests in Phase 6 will
-/// use a real DB for ON CONFLICT semantics).
-/// Here we fake the repository entirely to control state precisely.
+/// Unit tests for CrawlTaskProcessor with a transactional in-memory repository
+/// (see TestFakes.cs). Real-Postgres ON CONFLICT behaviour is covered in Phase 6.
 /// </summary>
 public class CrawlTaskProcessorTests
 {
+    private const string Root = "https://example.com/";
+    private const string Child = "https://example.com/about";
+    private const string NoLinksHtml = "<html><body>Hello world</body></html>";
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static CrawlJob MakeJob(
-        Guid? id = null,
-        JobStatus status = JobStatus.Pending,
+        JobStatus status = JobStatus.Running,
         int maxDepth = 2,
         int maxPages = 200,
         int pendingTasks = 1,
-        int pagesCrawled = 0,
-        string? failureReason = null)
-        => new CrawlJob
+        int pagesCrawled = 0)
+        => new()
         {
-            Id = id ?? Guid.NewGuid(),
-            Url = "https://example.com/",
+            Id = Guid.NewGuid(),
+            Url = Root,
             MaxDepth = maxDepth,
             MaxPages = maxPages,
             Status = status,
             PendingTasks = pendingTasks,
             PagesCrawled = pagesCrawled,
-            CreatedAt = DateTime.UtcNow,
-            FailureReason = failureReason
+            CreatedAt = DateTime.UtcNow
         };
 
     private static CrawlPageTask MakeTask(
-        Guid? jobId = null,
-        string url = "https://example.com/",
+        Guid jobId,
+        string url = Root,
         int depth = 0,
-        int maxDepth = 2,
-        string rootHost = "example.com",
         string? parentUrl = null,
-        int attempt = 1,
         Guid? messageId = null)
-        => new CrawlPageTask(
+        => new(
             MessageId: messageId ?? Guid.NewGuid(),
-            JobId: jobId ?? Guid.NewGuid(),
+            JobId: jobId,
             Url: url,
             ParentUrl: parentUrl,
             Depth: depth,
-            MaxDepth: maxDepth,
-            RootHost: rootHost,
-            Attempt: attempt);
+            MaxDepth: 2,
+            RootHost: "example.com",
+            Attempt: 1);
 
-    // ── Tests ──────────────────────────────────────────────────────────────────
+    private static CrawlTaskProcessor MakeProcessor(FakeRepo repo, IPageFetcher fetcher, FakePublisher? publisher = null)
+        => new(repo, fetcher, new LinkExtractor(), publisher ?? new FakePublisher(),
+            NullLogger<CrawlTaskProcessor>.Instance);
+
+    private static FixedResultFetcher Html(string html, string url = Root)
+        => new(new PageFetchResult.Success(html, new Uri(url)));
+
+    // ── Skip paths ────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Canceled_job_returns_success_without_fetching()
     {
         var job = MakeJob(status: JobStatus.Canceled);
-        var task = MakeTask(jobId: job.Id);
         var repo = new FakeRepo(job);
-        var fetcher = new FailingFetcher(); // must NOT be called
+        var fetcher = new FailingFetcher();
         var publisher = new FakePublisher();
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), publisher, NullLogger<CrawlTaskProcessor>.Instance);
-
-        var result = await processor.HandleAsync(task, CancellationToken.None);
+        var result = await MakeProcessor(repo, fetcher, publisher).HandleAsync(MakeTask(job.Id), CancellationToken.None);
 
         result.Should().BeOfType<ConsumeResult.Success>();
         fetcher.WasCalled.Should().BeFalse("canceled job should skip fetching");
         publisher.Published.Should().BeEmpty();
+        repo.PendingTasks.Should().Be(1);
     }
 
     [Fact]
     public async Task Missing_job_returns_success_without_fetching()
     {
-        var task = MakeTask();
-        var repo = new FakeRepo(null); // no job in DB
+        var repo = new FakeRepo(null);
         var fetcher = new FailingFetcher();
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), new FakePublisher(), NullLogger<CrawlTaskProcessor>.Instance);
-
-        var result = await processor.HandleAsync(task, CancellationToken.None);
+        var result = await MakeProcessor(repo, fetcher).HandleAsync(MakeTask(Guid.NewGuid()), CancellationToken.None);
 
         result.Should().BeOfType<ConsumeResult.Success>();
         fetcher.WasCalled.Should().BeFalse();
     }
 
     [Fact]
-    public async Task Transient_fetch_returns_TransientFailure()
+    public async Task Transient_fetch_returns_TransientFailure_and_does_not_consume_the_guard()
     {
         var job = MakeJob();
-        var task = MakeTask(jobId: job.Id);
         var repo = new FakeRepo(job);
-        var fetcher = new FixedResultFetcher(new PageFetchResult.Transient("timeout"));
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), new FakePublisher(), NullLogger<CrawlTaskProcessor>.Instance);
+        var result = await MakeProcessor(repo, new FixedResultFetcher(new PageFetchResult.Transient("timeout")))
+            .HandleAsync(MakeTask(job.Id), CancellationToken.None);
 
-        var result = await processor.HandleAsync(task, CancellationToken.None);
-
-        result.Should().BeOfType<ConsumeResult.TransientFailure>()
-            .Which.Reason.Should().Contain("timeout");
+        result.Should().BeOfType<ConsumeResult.TransientFailure>().Which.Reason.Should().Contain("timeout");
+        repo.ProcessedMessageCount.Should().Be(0, "transient failures must leave the messageId free for a later path");
+        repo.PendingTasks.Should().Be(1);
     }
+
+    // ── Permanent failures ────────────────────────────────────────────────────
 
     [Fact]
     public async Task Permanent_root_failure_marks_job_Failed()
     {
         var job = MakeJob(pendingTasks: 1);
-        var task = MakeTask(jobId: job.Id, depth: 0);
         var repo = new FakeRepo(job);
-        var fetcher = new FixedResultFetcher(new PageFetchResult.Permanent("HTTP 404"));
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), new FakePublisher(), NullLogger<CrawlTaskProcessor>.Instance);
-
-        var result = await processor.HandleAsync(task, CancellationToken.None);
+        var result = await MakeProcessor(repo, new FixedResultFetcher(new PageFetchResult.Permanent("HTTP 404")))
+            .HandleAsync(MakeTask(job.Id, depth: 0), CancellationToken.None);
 
         result.Should().BeOfType<ConsumeResult.PermanentFailure>();
         repo.JobStatus.Should().Be(JobStatus.Failed);
         repo.FailureReason.Should().Contain("404");
+        repo.PendingTasks.Should().Be(0);
     }
 
     [Fact]
     public async Task Permanent_child_failure_marks_job_Completed_not_Failed()
     {
-        var job = MakeJob(pendingTasks: 1, pagesCrawled: 1); // root already crawled
-        // depth=1 → child page
-        var task = MakeTask(jobId: job.Id, depth: 1, parentUrl: "https://example.com/");
+        var job = MakeJob(pendingTasks: 1, pagesCrawled: 1);
         var repo = new FakeRepo(job);
-        var fetcher = new FixedResultFetcher(new PageFetchResult.Permanent("HTTP 404"));
+        repo.SeedPage(Child, PageStatus.Pending);
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), new FakePublisher(), NullLogger<CrawlTaskProcessor>.Instance);
-
-        var result = await processor.HandleAsync(task, CancellationToken.None);
+        var result = await MakeProcessor(repo, new FixedResultFetcher(new PageFetchResult.Permanent("HTTP 404")))
+            .HandleAsync(MakeTask(job.Id, Child, depth: 1, parentUrl: Root), CancellationToken.None);
 
         result.Should().BeOfType<ConsumeResult.PermanentFailure>();
-        // Child failure with pending=0 → Completed (not Failed)
         repo.JobStatus.Should().Be(JobStatus.Completed);
+        repo.PageStatusOf(Child).Should().Be(PageStatus.Failed);
     }
+
+    // ── Success path ──────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Duplicate_delivery_is_idempotent()
     {
         var job = MakeJob(pendingTasks: 1);
-        var messageId = Guid.NewGuid();
-        var task = MakeTask(jobId: job.Id, messageId: messageId);
         var repo = new FakeRepo(job);
-        var publisher = new FakePublisher();
-        // No child links — simple page
-        var fetcher = new FixedResultFetcher(new PageFetchResult.Success(
-            "<html><body>Hello world</body></html>",
-            new Uri("https://example.com/")));
+        var processor = MakeProcessor(repo, Html(NoLinksHtml));
+        var task = MakeTask(job.Id);
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), publisher, NullLogger<CrawlTaskProcessor>.Instance);
-
-        // First delivery
         var r1 = await processor.HandleAsync(task, CancellationToken.None);
-        int counterAfterFirst = repo.PendingTasksAdjustmentTotal;
-
-        // Second delivery of same message
         var r2 = await processor.HandleAsync(task, CancellationToken.None);
-        int counterAfterSecond = repo.PendingTasksAdjustmentTotal;
 
         r1.Should().BeOfType<ConsumeResult.Success>();
         r2.Should().BeOfType<ConsumeResult.Success>();
+        repo.CounterUpdates.Should().Be(1, "duplicate delivery must not adjust counters a second time");
+        repo.PendingTasks.Should().Be(0);
+        repo.PageRowCount.Should().Be(1);
+    }
 
-        // Counter must NOT be decremented twice
-        counterAfterSecond.Should().Be(counterAfterFirst,
-            "duplicate delivery must not adjust counters a second time");
+    [Fact]
+    public async Task Child_task_upgrades_its_Pending_placeholder_to_Crawled()
+    {
+        var job = MakeJob(pendingTasks: 1);
+        var repo = new FakeRepo(job);
+        var publisher = new FakePublisher();
 
-        // Page upserted only once
-        repo.UpsertPageCallCount.Should().Be(1,
-            "second delivery should be short-circuited by ProcessedMessages guard");
+        await MakeProcessor(repo, Html("<a href='/about'>a</a>"), publisher)
+            .HandleAsync(MakeTask(job.Id), CancellationToken.None);
+
+        repo.PageStatusOf(Child).Should().Be(PageStatus.Pending, "children are placeholders until their own task runs");
+        repo.PendingTasks.Should().Be(1);
+
+        var childTask = publisher.Published.Should().ContainSingle().Subject;
+        await MakeProcessor(repo, Html(NoLinksHtml, Child)).HandleAsync(childTask, CancellationToken.None);
+
+        repo.PageStatusOf(Child).Should().Be(PageStatus.Crawled);
+        repo.PagesCrawled.Should().Be(2);
+        repo.PendingTasks.Should().Be(0);
+        repo.JobStatus.Should().Be(JobStatus.Completed);
     }
 
     [Fact]
     public async Task MaxPages_cap_prevents_publishing_excess_children()
     {
-        // Job already at the limit: pagesCrawled + pendingTasks = maxPages
         var job = MakeJob(pendingTasks: 1, pagesCrawled: 199, maxPages: 200);
-        var html = @"<html><body>
-            <a href='/a'>a</a><a href='/b'>b</a><a href='/c'>c</a>
-        </body></html>";
-        var task = MakeTask(jobId: job.Id, url: "https://example.com/");
-        var repo = new FakeRepo(job);
         var publisher = new FakePublisher();
-        var fetcher = new FixedResultFetcher(new PageFetchResult.Success(html, new Uri("https://example.com/")));
 
-        var processor = new CrawlTaskProcessor(
-            repo, fetcher, new LinkExtractor(), publisher, NullLogger<CrawlTaskProcessor>.Instance);
+        await MakeProcessor(new FakeRepo(job), Html("<a href='/a'>a</a><a href='/b'>b</a><a href='/c'>c</a>"), publisher)
+            .HandleAsync(MakeTask(job.Id), CancellationToken.None);
 
-        await processor.HandleAsync(task, CancellationToken.None);
-
-        // 199 crawled + 1 pending = 200 = maxPages → no room for new children
         publisher.Published.Should().BeEmpty("MaxPages cap must prevent any child tasks from being published");
     }
-}
 
-// ── Fakes ─────────────────────────────────────────────────────────────────────
+    // ── Dead-letter finalization ──────────────────────────────────────────────
 
-/// <summary>
-/// In-memory fake of ICrawlRepository. Tracks state changes without a real DB.
-/// </summary>
-internal class FakeRepo : ICrawlRepository
-{
-    private readonly CrawlJob? _job;
-    private readonly HashSet<Guid> _processedMessages = new();
-    private readonly HashSet<string> _pages = new(); // tracks (jobId, url) as "jobId|url"
-
-    public JobStatus JobStatus { get; private set; }
-    public string? FailureReason { get; private set; }
-    public int PendingTasksAdjustmentTotal { get; private set; }
-    public int UpsertPageCallCount { get; private set; }
-
-    public FakeRepo(CrawlJob? job)
+    [Fact]
+    public async Task DeadLetter_child_marks_page_Failed_decrements_counter_and_completes_job()
     {
-        _job = job;
-        if (job is not null)
+        var job = MakeJob(pendingTasks: 1, pagesCrawled: 1);
+        var repo = new FakeRepo(job);
+        repo.SeedPage(Child, PageStatus.Pending);
+
+        await MakeProcessor(repo, new FailingFetcher())
+            .OnDeadLetteredAsync(MakeTask(job.Id, Child, depth: 1, parentUrl: Root),
+                "Retries exhausted after 5 attempt(s): HTTP 503", CancellationToken.None);
+
+        repo.PageStatusOf(Child).Should().Be(PageStatus.Failed);
+        repo.PageErrorOf(Child).Should().Contain("Dead-lettered").And.Contain("HTTP 503");
+        repo.PendingTasks.Should().Be(0);
+        repo.JobStatus.Should().Be(JobStatus.Completed, "only a child failed");
+    }
+
+    [Fact]
+    public async Task DeadLetter_child_with_other_tasks_in_flight_keeps_job_Running()
+    {
+        var job = MakeJob(pendingTasks: 3);
+        var repo = new FakeRepo(job);
+
+        await MakeProcessor(repo, new FailingFetcher())
+            .OnDeadLetteredAsync(MakeTask(job.Id, Child, depth: 1), "Poison: bad", CancellationToken.None);
+
+        repo.PendingTasks.Should().Be(2);
+        repo.JobStatus.Should().Be(JobStatus.Running);
+    }
+
+    [Fact]
+    public async Task DeadLetter_root_marks_job_Failed_with_reason()
+    {
+        var job = MakeJob(pendingTasks: 1);
+        var repo = new FakeRepo(job);
+
+        await MakeProcessor(repo, new FailingFetcher())
+            .OnDeadLetteredAsync(MakeTask(job.Id, depth: 0), "Retries exhausted after 5 attempt(s): timeout",
+                CancellationToken.None);
+
+        repo.JobStatus.Should().Be(JobStatus.Failed);
+        repo.FailureReason.Should().Contain("Retries exhausted").And.Contain("timeout");
+        repo.PendingTasks.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DeadLetter_does_not_overwrite_a_Crawled_page()
+    {
+        var job = MakeJob(pendingTasks: 2);
+        var repo = new FakeRepo(job);
+        repo.SeedPage(Child, PageStatus.Crawled);
+
+        await MakeProcessor(repo, new FailingFetcher())
+            .OnDeadLetteredAsync(MakeTask(job.Id, Child, depth: 1), "Poison: bad", CancellationToken.None);
+
+        repo.PageStatusOf(Child).Should().Be(PageStatus.Crawled);
+        repo.PendingTasks.Should().Be(1, "the message itself is still finished exactly once");
+    }
+
+    [Fact]
+    public async Task DeadLetter_on_canceled_job_changes_nothing()
+    {
+        var job = MakeJob(status: JobStatus.Canceled, pendingTasks: 2);
+        var repo = new FakeRepo(job);
+
+        await MakeProcessor(repo, new FailingFetcher())
+            .OnDeadLetteredAsync(MakeTask(job.Id, Child, depth: 1), "Poison: bad", CancellationToken.None);
+
+        repo.PendingTasks.Should().Be(2);
+        repo.JobStatus.Should().Be(JobStatus.Canceled);
+        repo.ProcessedMessageCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DeadLetter_finalization_failure_rolls_back_and_can_be_retried()
+    {
+        var job = MakeJob(pendingTasks: 1);
+        var repo = new FakeRepo(job) { ThrowIn = nameof(FakeRepo.SetJobFailedAsync) };
+        var processor = MakeProcessor(repo, new FailingFetcher());
+        var task = MakeTask(job.Id, depth: 0);
+
+        var act = () => processor.OnDeadLetteredAsync(task, "Poison: bad", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        repo.PendingTasks.Should().Be(1, "the decrement ran inside the transaction that rolled back");
+        repo.ProcessedMessageCount.Should().Be(0, "the guard rolled back too, so a retry can still finalize");
+        repo.PageStatusOf(Root).Should().BeNull();
+        repo.JobStatus.Should().Be(JobStatus.Running);
+
+        repo.ThrowIn = null;
+        await processor.OnDeadLetteredAsync(task, "Poison: bad", CancellationToken.None);
+
+        repo.PendingTasks.Should().Be(0);
+        repo.JobStatus.Should().Be(JobStatus.Failed);
+    }
+
+    // ── One messageId, one decrement — across every finishing path ────────────
+
+    public enum FinishOrder
+    {
+        SuccessThenDeadLetter,
+        DeadLetterThenSuccess,
+        PermanentThenDeadLetter,
+        DeadLetterTwice
+    }
+
+    [Theory]
+    [InlineData(FinishOrder.SuccessThenDeadLetter)]
+    [InlineData(FinishOrder.DeadLetterThenSuccess)]
+    [InlineData(FinishOrder.PermanentThenDeadLetter)]
+    [InlineData(FinishOrder.DeadLetterTwice)]
+    public async Task One_messageId_decrements_pending_tasks_exactly_once_across_paths(FinishOrder order)
+    {
+        // pending starts at 3 so a double decrement (→ 1) cannot be confused with completion.
+        var job = MakeJob(pendingTasks: 3);
+        var repo = new FakeRepo(job);
+        repo.SeedPage(Child, PageStatus.Pending);
+        var task = MakeTask(job.Id, Child, depth: 1, parentUrl: Root);
+
+        var success = MakeProcessor(repo, Html(NoLinksHtml, Child));
+        var permanent = MakeProcessor(repo, new FixedResultFetcher(new PageFetchResult.Permanent("HTTP 404")));
+        Func<Task> deadLetter = () => success.OnDeadLetteredAsync(task, "Retries exhausted", CancellationToken.None);
+
+        switch (order)
         {
-            JobStatus = job.Status;
-            FailureReason = job.FailureReason;
+            case FinishOrder.SuccessThenDeadLetter:
+                await success.HandleAsync(task, CancellationToken.None);
+                await deadLetter();
+                repo.PageStatusOf(Child).Should().Be(PageStatus.Crawled);
+                break;
+            case FinishOrder.DeadLetterThenSuccess:
+                await deadLetter();
+                await success.HandleAsync(task, CancellationToken.None);
+                repo.PageStatusOf(Child).Should().Be(PageStatus.Failed);
+                break;
+            case FinishOrder.PermanentThenDeadLetter:
+                await permanent.HandleAsync(task, CancellationToken.None);
+                await deadLetter();
+                repo.PageErrorOf(Child).Should().Be("HTTP 404");
+                break;
+            case FinishOrder.DeadLetterTwice:
+                await deadLetter();
+                await deadLetter();
+                break;
         }
-    }
 
-    public Task<CrawlJob?> GetJobAsync(Guid jobId, CancellationToken ct = default)
-        => Task.FromResult(_job?.Id == jobId ? _job : null);
-
-    public Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken ct = default)
-        => Task.FromResult<IDbContextTransaction>(new FakeTransaction());
-
-    public Task<bool> TryInsertProcessedMessageAsync(Guid messageId, IDbContextTransaction tx, CancellationToken ct = default)
-    {
-        bool added = _processedMessages.Add(messageId);
-        return Task.FromResult(added);
-    }
-
-    public Task SetJobRunningIfPendingAsync(Guid jobId, IDbContextTransaction tx, CancellationToken ct = default)
-    {
-        if (JobStatus == JobStatus.Pending) JobStatus = JobStatus.Running;
-        return Task.CompletedTask;
-    }
-
-    public Task SetJobCompletedAsync(Guid jobId, IDbContextTransaction tx, CancellationToken ct = default)
-    {
-        JobStatus = JobStatus.Completed;
-        return Task.CompletedTask;
-    }
-
-    public Task SetJobFailedAsync(Guid jobId, string reason, IDbContextTransaction tx, CancellationToken ct = default)
-    {
-        JobStatus = JobStatus.Failed;
-        FailureReason = reason;
-        return Task.CompletedTask;
-    }
-
-    public Task<Guid?> UpsertPageAsync(
-        Guid pageId, Guid jobId, string normalizedUrl, int depth,
-        double domainLinkRatio, int totalLinks, int internalLinks,
-        PageStatus status, string? error, IDbContextTransaction tx,
-        CancellationToken ct = default)
-    {
-        string key = $"{jobId}|{normalizedUrl}";
-        if (_pages.Add(key))
-        {
-            UpsertPageCallCount++;
-            return Task.FromResult<Guid?>(pageId);
-        }
-        return Task.FromResult<Guid?>(null);
-    }
-
-    public Task<Guid?> GetPageIdAsync(Guid jobId, string normalizedUrl, CancellationToken ct = default)
-        => Task.FromResult<Guid?>(Guid.NewGuid()); // return a stable fake id
-
-    public Task UpsertEdgeAsync(
-        Guid edgeId, Guid jobId, Guid parentPageId, string childUrl,
-        IDbContextTransaction tx, CancellationToken ct = default)
-        => Task.CompletedTask;
-
-    public Task UpdatePageStatusAsync(
-        Guid jobId, string normalizedUrl, PageStatus status, string? error,
-        IDbContextTransaction tx, CancellationToken ct = default)
-        => Task.CompletedTask;
-
-    public Task<int> AdjustCountersAndReturnPendingAsync(
-        Guid jobId, int pendingDelta, bool isNewPage, IDbContextTransaction tx,
-        CancellationToken ct = default)
-    {
-        PendingTasksAdjustmentTotal += pendingDelta;
-        int newPending = (_job?.PendingTasks ?? 1) + PendingTasksAdjustmentTotal;
-        return Task.FromResult(Math.Max(0, newPending));
+        repo.PendingTasks.Should().Be(2);
+        repo.CounterUpdates.Should().Be(1);
+        repo.ProcessedMessageCount.Should().Be(1);
+        repo.JobStatus.Should().Be(JobStatus.Running);
     }
 }
-
-/// <summary>No-op transaction; no real DB involved.</summary>
-internal class FakeTransaction : IDbContextTransaction
-{
-    public Guid TransactionId => Guid.NewGuid();
-    public Task CommitAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-    public Task RollbackAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-    public void Commit() { }
-    public void Rollback() { }
-    public void Dispose() { }
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-}
-
-/// <summary>Captures published messages without hitting a broker.</summary>
-internal class FakePublisher : IRabbitMqPublisher
-{
-    public List<CrawlPageTask> Published { get; } = new();
-
-    public Task PublishCrawlTaskAsync(CrawlPageTask task, CancellationToken cancellationToken = default)
-    {
-        Published.Add(task);
-        return Task.CompletedTask;
-    }
-
-    public Task PublishRetryAsync(CrawlPageTask task, CancellationToken cancellationToken = default)
-    {
-        Published.Add(task);
-        return Task.CompletedTask;
-    }
-}
-
-/// <summary>Fetcher that always throws — used to assert fetch is never called.</summary>
-internal class FailingFetcher : IPageFetcher
-{
-    public bool WasCalled { get; private set; }
-
-    public Task<PageFetchResult> FetchAsync(string url, CancellationToken cancellationToken = default)
-    {
-        WasCalled = true;
-        throw new InvalidOperationException("FetchAsync should not have been called in this test");
-    }
-}
-
-/// <summary>Fetcher that always returns a configured result.</summary>
-internal class FixedResultFetcher : IPageFetcher
-{
-    private readonly PageFetchResult _result;
-
-    public FixedResultFetcher(PageFetchResult result) => _result = result;
-
-    public Task<PageFetchResult> FetchAsync(string url, CancellationToken cancellationToken = default)
-        => Task.FromResult(_result);
-}
-

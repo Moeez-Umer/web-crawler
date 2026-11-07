@@ -31,6 +31,23 @@ public interface ICrawlRepository
         IDbContextTransaction tx,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Insert the page row, or upgrade it only if it is still a Pending placeholder.
+    /// Returns the id if a row was written; null if the row was already Crawled/Failed.
+    /// </summary>
+    Task<Guid?> RecordPageResultAsync(
+        Guid pageId,
+        Guid jobId,
+        string normalizedUrl,
+        int depth,
+        double domainLinkRatio,
+        int totalLinks,
+        int internalLinks,
+        PageStatus status,
+        string? error,
+        IDbContextTransaction tx,
+        CancellationToken ct = default);
+
     Task UpdatePageStatusAsync(
         Guid jobId,
         string normalizedUrl,
